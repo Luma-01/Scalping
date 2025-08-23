@@ -1,0 +1,19 @@
+2025-08-23 14:20:35 - __main__ - INFO - 실시간 거래 봇 시작 요청
+2025-08-23 14:20:35 - __main__ - INFO - 실시간 거래 봇 초기화 시작
+2025-08-23 14:20:36 - __main__ - ERROR - 계정 정보를 가져올 수 없습니다
+2025-08-23 14:22:42 - __main__ - INFO - 실시간 거래 봇 시작 요청
+2025-08-23 14:22:42 - __main__ - INFO - 실시간 거래 봇 초기화 시작
+2025-08-23 14:22:43 - __main__ - ERROR - 계정 정보를 가져올 수 없습니다
+2025-08-23 14:23:07 - __main__ - INFO - 실시간 거래 봇 시작 요청
+2025-08-23 14:23:07 - __main__ - INFO - 실시간 거래 봇 초기화 시작
+2025-08-23 14:23:07 - __main__ - INFO - [시뮬레이션] 초기 잔고: 10000.00 USDT
+2025-08-23 14:23:08 - __main__ - INFO - 봇 초기화 완료
+2025-08-23 14:23:08 - __main__ - INFO - 거래 루프 시작
+2025-08-23 14:23:08 - __main__ - ERROR - 데이터 수집 오류: 'GateIOConnector' object has no attribute 'get_klines'
+2025-08-23 14:23:08 - __main__ - WARNING - 데이터 부족, 대기 중...
+2025-08-23 14:23:38 - __main__ - ERROR - 데이터 수집 오류: 'GateIOConnector' object has no attribute 'get_klines'
+2025-08-23 14:23:38 - __main__ - WARNING - 데이터 부족, 대기 중...
+2025-08-23 14:24:08 - __main__ - ERROR - 데이터 수집 오류: 'GateIOConnector' object has no attribute 'get_klines'
+2025-08-23 14:24:08 - __main__ - WARNING - 데이터 부족, 대기 중...
+2025-08-23 14:24:38 - __main__ - ERROR - 데이터 수집 오류: 'GateIOConnector' object has no attribute 'get_klines'
+2025-08-23 14:24:38 - __main__ - WARNING - 데이터 부족, 대기 중...
