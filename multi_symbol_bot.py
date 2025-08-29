@@ -3,6 +3,7 @@ import sys
 import time
 import pandas as pd
 import logging
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import threading
@@ -80,6 +81,9 @@ class MultiSymbolTradingBot:
         self.trades_today = []
         self.daily_start_balance = 0.0
         
+        # Contract Size 캐시 (동적으로 학습)
+        self.contract_sizes = self.load_contract_sizes()  # {symbol: contract_size}
+        
     def initialize(self) -> bool:
         """봇 초기화"""
         try:
@@ -122,8 +126,11 @@ class MultiSymbolTradingBot:
                 )
                 
                 # 각 심볼별 레버리지 설정
+                log_info("LEVERAGE", f"레버리지 {settings.trading.leverage}배 설정 중...", "⚙️")
                 for symbol in self.trading_symbols:
-                    self.connector.set_leverage(symbol, settings.trading.leverage)
+                    result = self.connector.set_leverage(symbol, settings.trading.leverage)
+                    if not result:
+                        log_info("WARNING", f"{symbol} 레버리지 설정 실패 (기존값 유지)", "⚠️")
             
             log_success(f"거래 대상 설정 완료: {len(self.trading_symbols)}개 심볼")
             
@@ -160,7 +167,8 @@ class MultiSymbolTradingBot:
                     ticker = self.connector.get_futures_ticker(symbol)
                     if ticker and 'last_price' in ticker:
                         self.market_data[symbol]['current_price'] = ticker['last_price']
-                        # 캐시 사용 로그는 너무 많아서 제거
+                        # 캐시된 데이터 사용도 성공으로 카운트
+                        self.data_success_count += 1
                         return self.market_data[symbol]
                 except Exception:
                     pass  # 티커 조회 실패시 새 데이터 수집
@@ -215,7 +223,8 @@ class MultiSymbolTradingBot:
             
         except Exception as e:
             self.data_error_count += 1
-            log_error(f"{symbol} 데이터 수집 실패: {e}")
+            # 에러만 간단히 출력 (상세 내용은 에러 발생시에만)
+            print(f"{get_kst_time()} ❌ [ERROR] {symbol} 데이터 수집 실패: {str(e)}")
             return self.market_data.get(symbol, {})
 
     def process_symbol(self, symbol: str) -> None:
@@ -297,19 +306,98 @@ class MultiSymbolTradingBot:
             return True
         return False
 
+    def get_contract_size(self, symbol: str) -> float:
+        """Gate.io Contract Size 반환 (API 조회 → 캐시 → 기본값 순)"""
+        # 캐시된 값이 있으면 사용
+        if symbol in self.contract_sizes:
+            return self.contract_sizes[symbol]
+        
+        # API에서 Contract 정보 조회
+        try:
+            contract_info = self.connector.get_contract_info(symbol)
+            if contract_info and 'contract_size' in contract_info:
+                contract_size = contract_info['contract_size']
+                # 캐시에 저장
+                self.contract_sizes[symbol] = contract_size
+                self.save_contract_sizes()
+                print(f"{get_kst_time()} 🔍 [API] {symbol} Contract Size 조회: {contract_size}")
+                return contract_size
+        except Exception as e:
+            print(f"{get_kst_time()} ⚠️ [WARNING] {symbol} Contract Size API 조회 실패: {e}")
+        
+        # API 조회 실패시 알려진 값 사용
+        known_sizes = {
+            'XRP_USDT': 10,
+            'BTC_USDT': 0.0001,
+            'ETH_USDT': 0.01,
+            'DOGE_USDT': 10,
+            'SOL_USDT': 1,
+            'PEPE_USDT': 10000000,  # PEPE는 천만개 단위
+            'FARTCOIN_USDT': 1,
+        }
+        
+        if symbol in known_sizes:
+            fallback_size = known_sizes[symbol]
+            print(f"{get_kst_time()} 📋 [KNOWN] {symbol} Contract Size (기본값): {fallback_size}")
+            self.contract_sizes[symbol] = fallback_size
+            return fallback_size
+        
+        # 완전히 모르는 심볼은 1로 설정
+        print(f"{get_kst_time()} ⚠️ [UNKNOWN] {symbol} Contract Size 미확인 (기본값 1 사용)")
+        return 1
+    
+    def load_contract_sizes(self) -> Dict[str, float]:
+        """저장된 Contract Size 로드"""
+        try:
+            contract_file = "contract_sizes.json"
+            if os.path.exists(contract_file):
+                with open(contract_file, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            log_info("LOAD", f"Contract Size 파일 로드 실패: {e}", "⚠️")
+        return {}
+    
+    def save_contract_sizes(self):
+        """Contract Size 파일에 저장"""
+        try:
+            contract_file = "contract_sizes.json"
+            with open(contract_file, 'w') as f:
+                json.dump(self.contract_sizes, f, indent=2)
+        except Exception as e:
+            log_info("SAVE", f"Contract Size 파일 저장 실패: {e}", "⚠️")
+    
+    def learn_contract_size(self, symbol: str, sdk_size: float, actual_size: float):
+        """주문 결과를 통해 Contract Size 학습"""
+        if sdk_size > 0:
+            detected_size = actual_size / sdk_size
+            # 기존 값과 다르면 업데이트
+            if symbol not in self.contract_sizes or abs(self.contract_sizes[symbol] - detected_size) > 0.0001:
+                self.contract_sizes[symbol] = detected_size
+                log_info("LEARN", f"{symbol} Contract Size 학습: 1 계약 = {detected_size} {symbol.split('_')[0]}", "🧠")
+                self.save_contract_sizes()  # 즉시 저장
+    
+    def get_actual_size(self, symbol: str, sdk_size: float) -> float:
+        """SDK 크기를 실제 크기로 변환"""
+        contract_size = self.get_contract_size(symbol)
+        return sdk_size * contract_size
+
     def open_position(self, symbol: str, signal: Signal, price: float):
         """포지션 진입"""
         try:
             # 포지션 크기 계산 (총 시드의 10%를 15개 심볼에 분산)
             total_allocation = self.balance * 0.10  # 총 시드의 10%
             per_symbol_allocation = total_allocation / len(self.trading_symbols)  # 심볼당 할당
-            size = (per_symbol_allocation * settings.trading.leverage) / price
             
-            # 최소 거래 단위 조정 (Gate.io 기준)
-            if symbol == 'BTC_USDT':
-                size = round(size, 4)
-            else:
-                size = round(size, 2)
+            # Contract Size를 고려한 크기 계산
+            contract_size = self.get_contract_size(symbol)
+            max_contracts = int((per_symbol_allocation * settings.trading.leverage) / (contract_size * price))
+            size = max(1, max_contracts)
+            
+            actual_amount = size * contract_size
+            coin_name = symbol.split('_')[0]
+            
+            # Contract Size 정보 표시 (1이어도 정상)
+            log_info("CONTRACT", f"{symbol}: {size} 계약 = {actual_amount} {coin_name} (Contract Size: {contract_size})", "📋")
             
             if size <= 0:
                 return
@@ -324,15 +412,52 @@ class MultiSymbolTradingBot:
             )
             
             if order and order.get('order_id'):
+                # Contract Size 학습 (주문 결과에서 실제 크기 확인)
+                order_actual_size = order.get('size', size)
+                if order_actual_size != size:
+                    self.learn_contract_size(symbol, size, order_actual_size)
+                
+                # ATR 기반 동적 익절/손절 계산
+                market_data = self.collect_market_data(symbol)
+                if market_data and 'ltf' in market_data and not market_data['ltf'].empty:
+                    df = market_data['ltf']
+                    if len(df) >= settings.trading.atr_period:
+                        # ATR 계산
+                        from final_high_frequency_strategy import TechnicalIndicators
+                        atr = TechnicalIndicators.atr(
+                            df['high'], df['low'], df['close'], 
+                            settings.trading.atr_period
+                        ).iloc[-1]
+                        
+                        # ATR 기반 손절/익절 설정
+                        if side == 'long':
+                            stop_loss = price - (atr * settings.trading.stop_loss_atr_mult)
+                            take_profit = price + (atr * settings.trading.take_profit_atr_mult)
+                        else:
+                            stop_loss = price + (atr * settings.trading.stop_loss_atr_mult)
+                            take_profit = price - (atr * settings.trading.take_profit_atr_mult)
+                        
+                        log_info("ATR", f"{symbol} ATR: {atr:.6f}, 손절: {stop_loss:.6f}, 익절: {take_profit:.6f}", "📊")
+                    else:
+                        # 데이터 부족시 기본값 사용
+                        stop_loss = price * (0.997 if side == 'long' else 1.003)
+                        take_profit = price * (1.003 if side == 'long' else 0.997)
+                        log_info("ATR", f"{symbol} ATR 데이터 부족 - 고정 0.3% 사용", "⚠️")
+                else:
+                    # 시장 데이터 없을 시 기본값
+                    stop_loss = price * (0.997 if side == 'long' else 1.003)
+                    take_profit = price * (1.003 if side == 'long' else 0.997)
+                    log_info("ATR", f"{symbol} 시장 데이터 없음 - 고정 0.3% 사용", "⚠️")
+
                 # 포지션 기록
                 position = Position(
                     symbol=symbol,
                     side=side,
-                    size=size,
+                    size=size,  # SDK 크기 저장
                     entry_price=price,
                     entry_time=datetime.now(),
-                    stop_loss=price * (0.997 if side == 'long' else 1.003),  # 0.3% 손절
-                    take_profit=price * (1.003 if side == 'long' else 0.997)  # 0.3% 익절
+                    stop_loss=stop_loss,
+                    take_profit=take_profit
                 )
                 
                 self.positions[symbol] = position
@@ -343,7 +468,7 @@ class MultiSymbolTradingBot:
                 # Discord 알림
                 discord_notifier.send_position_opened(
                     side, symbol, price, size, 
-                    f"신뢰도: {signal.confidence:.2f}"
+                    position.stop_loss, position.take_profit
                 )
                 
         except Exception as e:
@@ -367,13 +492,15 @@ class MultiSymbolTradingBot:
             )
             
             if order and order.get('order_id'):
-                # 손익 계산
-                if position.side == 'long':
-                    pnl = (price - position.entry_price) * position.size
-                else:
-                    pnl = (position.entry_price - price) * position.size
+                # Contract Size를 고려한 손익 계산
+                actual_size = self.get_actual_size(symbol, position.size)
                 
-                pnl_pct = (pnl / (position.entry_price * position.size)) * 100 * settings.trading.leverage
+                if position.side == 'long':
+                    pnl = (price - position.entry_price) * actual_size
+                else:
+                    pnl = (position.entry_price - price) * actual_size
+                
+                pnl_pct = (pnl / (position.entry_price * actual_size)) * 100 * settings.trading.leverage
                 
                 self.daily_pnl += pnl
                 self.balance += pnl
@@ -438,7 +565,7 @@ class MultiSymbolTradingBot:
                 self.analysis_count = 0
                 self.signal_count = 0
                 
-                # 각 심볼 순차 처리
+                # 각 심볼 순차 처리 (조용히)
                 for symbol in self.trading_symbols:
                     if not self.running:
                         break
@@ -460,6 +587,16 @@ class MultiSymbolTradingBot:
                 elif self.data_error_count > 0:
                     # 오류가 있으면 로그 출력
                     log_info("DATA", f"데이터 수집: {self.data_success_count}개 성공, {self.data_error_count}개 실패", "⚠️")
+                    
+                    # 실패한 심볼들 확인
+                    failed_symbols = []
+                    for symbol in self.trading_symbols:
+                        if symbol not in self.market_data or not self.market_data[symbol]:
+                            failed_symbols.append(symbol)
+                    
+                    if failed_symbols:
+                        print(f"{get_kst_time()} 🚨 [FAILED_SYMBOLS] 데이터 수집 실패: {', '.join(failed_symbols)}")
+                        
                 # 신호 없고 오류 없으면 로그 생략 (스팸 방지)
                 
                 # 5초 대기 (고빈도 거래)

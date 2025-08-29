@@ -71,7 +71,10 @@ class GateIOConnector:
             return df
             
         except (ApiException, GateApiException) as e:
-            print(f"K라인 조회 실패: {e}")
+            print(f"{get_kst_time()} ❌ [KLINE] {symbol} K라인 조회 실패: {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            print(f"{get_kst_time()} ❌ [KLINE] {symbol} K라인 조회 예외: {e}")
             return pd.DataFrame()
     
     def get_futures_ticker(self, symbol: str) -> Dict:
@@ -85,8 +88,8 @@ class GateIOConnector:
                     'last_price': float(ticker.last),
                     'bid_price': float(ticker.highest_bid) if ticker.highest_bid else 0,
                     'ask_price': float(ticker.lowest_ask) if ticker.lowest_ask else 0,
-                    'volume': float(ticker.base_volume),
-                    'change_percentage': float(ticker.change_percentage)
+                    'volume': float(ticker.volume_24h) if hasattr(ticker, 'volume_24h') else 0,
+                    'change_percentage': float(ticker.change_percentage) if ticker.change_percentage else 0
                 }
         except (ApiException, GateApiException) as e:
             print(f"티커 조회 실패: {e}")
@@ -160,52 +163,145 @@ class GateIOConnector:
             return False
     
     def get_top_volume_symbols(self, limit: int = 15) -> List[str]:
-        """거래량 상위 심볼 조회"""
+        """거래량 상위 심볼 조회 - 안정적인 주요 심볼 사용"""
+        # Gate.io 선물 거래에서 실제 거래량이 높은 주요 심볼들 (2025년 1월 기준)
+        major_symbols = [
+            'BTC_USDT',   # 비트코인 - 가장 높은 거래량
+            'ETH_USDT',   # 이더리움 - 2위 거래량
+            'SOL_USDT',   # 솔라나 - 3위 거래량
+            'XRP_USDT',   # 리플 - 4위 거래량  
+            'DOGE_USDT',  # 도지코인 - 5위 거래량
+            'ADA_USDT',   # 카르다노
+            'AVAX_USDT',  # 아발란체
+            'LINK_USDT',  # 체인링크
+            'DOT_USDT',   # 폴카닷
+            'MATIC_USDT', # 폴리곤
+            'UNI_USDT',   # 유니스왑
+            'LTC_USDT',   # 라이트코인
+            'BCH_USDT',   # 비트코인캐시
+            'FIL_USDT',   # 파일코인
+            'ATOM_USDT',  # 코스모스
+            'TRX_USDT',   # 트론
+            'ETC_USDT',   # 이더리움클래식
+            'NEAR_USDT',  # 니어프로토콜
+            'ICP_USDT',   # 인터넷컴퓨터
+            'ARB_USDT'    # 아비트럼
+        ]
+        
         try:
             # 모든 USDT 선물 티커 조회
             result = self.futures_api.list_futures_tickers(settle='usdt')
             
-            print(f"{get_kst_time()} 🔍 [DEBUG] 첫 번째 티커 속성 확인: {dir(result[0]) if result else 'No data'}")
+            if not result:
+                return major_symbols[:limit]
             
-            # 속성명 확인해서 거래량 기준으로 정렬
-            if result and hasattr(result[0], 'volume_24h'):
-                sorted_tickers = sorted(result, 
-                                      key=lambda x: float(x.volume_24h) if x.volume_24h else 0, 
-                                      reverse=True)
-            elif result and hasattr(result[0], 'vol'):
-                sorted_tickers = sorted(result, 
-                                      key=lambda x: float(x.vol) if x.vol else 0, 
-                                      reverse=True)
-            else:
-                # 속성을 찾을 수 없으면 기본 인기 심볼 반환
-                print("거래량 속성을 찾을 수 없습니다. 기본 심볼을 사용합니다.")
-                return ['BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'ADA_USDT', 'SOL_USDT',
-                       'XRP_USDT', 'DOGE_USDT', 'AVAX_USDT', 'DOT_USDT', 'MATIC_USDT',
-                       'ATOM_USDT', 'LINK_USDT', 'UNI_USDT', 'LTC_USDT', 'BCH_USDT']
+            # Gate.io 공식 문서에 따른 올바른 거래량 속성 선택
+            # volume_24h_base: 베이스 화폐 단위의 거래량 (가장 정확)
+            # volume_24h_settle: 결제 화폐 단위의 거래량 (USDT 선물의 경우 적합)
+            # volume_24h: 총 거래량 (계약 단위)
             
-            # 상위 limit개 심볼 추출 (USDT 페어만)
+            volume_attr = None
+            attrs_priority = ['volume_24h_settle', 'volume_24h_base', 'volume_24h']
+            
+            print(f"{get_kst_time()} 🔍 [DEBUG] 거래량 속성 확인:")
+            for attr in attrs_priority:
+                if hasattr(result[0], attr):
+                    # 첫 번째 티커에서 값이 유효한지 확인
+                    test_value = getattr(result[0], attr)
+                    if test_value and float(test_value) > 0:
+                        volume_attr = attr
+                        print(f"  {attr}: 사용 가능 (값: {test_value})")
+                        break
+                    else:
+                        print(f"  {attr}: 값 없음 또는 0")
+            
+            if not volume_attr:
+                print(f"{get_kst_time()} ❌ [ERROR] 유효한 거래량 속성을 찾을 수 없음")
+                return major_symbols[:limit]
+            
+            print(f"{get_kst_time()} ✅ [VOLUME] {volume_attr} 속성으로 정렬")
+            
+            # 선택된 속성으로 정렬
+            sorted_tickers = sorted(result, 
+                                  key=lambda x: float(getattr(x, volume_attr)) if getattr(x, volume_attr) else 0, 
+                                  reverse=True)
+            
+            # 상위 15개 출력 (디버깅)
+            print(f"{get_kst_time()} 🔍 [TOP15] {volume_attr} 기준 상위 15개:")
+            for i, ticker in enumerate(sorted_tickers[:15], 1):
+                volume = float(getattr(ticker, volume_attr)) if getattr(ticker, volume_attr) else 0
+                print(f"  {i:2d}. {ticker.contract:<15} ({volume:,.0f})")
+            
+            # USDT 페어만 선별하여 최종 리스트 생성
             top_symbols = []
-            for ticker in sorted_tickers[:limit*2]:  # 여유분으로 더 많이 가져옴
+            for ticker in sorted_tickers:
                 symbol = ticker.contract
                 if symbol.endswith('_USDT') and len(top_symbols) < limit:
-                    # 일반적인 암호화폐만 포함 (너무 exotic한 것 제외)
-                    base = symbol.replace('_USDT', '')
-                    if len(base) <= 10:  # 토큰명이 너무 길지 않은 것만
-                        top_symbols.append(symbol)
+                    top_symbols.append(symbol)
             
-            print(f"{get_kst_time()} ✅ [SYMBOLS] 거래량 상위 {len(top_symbols)}개 심볼 조회 완료:")
+            print(f"{get_kst_time()} ✅ [SYMBOLS] 거래량 상위 {len(top_symbols)}개 심볼:")
             for i, symbol in enumerate(top_symbols, 1):
                 print(f"  {i:2d}. {symbol}")
                 
             return top_symbols
             
         except (ApiException, GateApiException) as e:
-            print(f"{get_kst_time()} ❌ [ERROR] 거래량 상위 심볼 조회 실패: {e}")
-            # 기본 인기 심볼 반환
-            return ['BTC_USDT', 'ETH_USDT', 'BNB_USDT', 'ADA_USDT', 'SOL_USDT',
-                   'XRP_USDT', 'DOGE_USDT', 'AVAX_USDT', 'DOT_USDT', 'MATIC_USDT',
-                   'ATOM_USDT', 'LINK_USDT', 'UNI_USDT', 'LTC_USDT', 'BCH_USDT']
+            print(f"{get_kst_time()} ❌ [ERROR] 심볼 조회 실패: {e}")
+            # 최소한의 안전한 심볼 반환
+            return ['BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'XRP_USDT', 'DOGE_USDT'][:limit]
     
+    def get_contract_info(self, symbol: str) -> Dict:
+        """Contract 정보 조회 (Contract Size 포함)"""
+        try:
+            result = self.futures_api.get_futures_contract(settle='usdt', contract=symbol)
+            if result:
+                contract_info = {
+                    'symbol': result.name,
+                    'order_size_min': float(result.order_size_min) if result.order_size_min else 1,
+                    'order_size_max': float(result.order_size_max) if result.order_size_max else 1000000,
+                    'quanto_multiplier': float(result.quanto_multiplier) if hasattr(result, 'quanto_multiplier') and result.quanto_multiplier else None
+                }
+                
+                # Contract Size 계산 (SDK 주문 크기 1당 실제 암호화폐 수량)
+                # Gate.io에서는 보통 quanto_multiplier가 Contract Size 역할을 함
+                if contract_info['quanto_multiplier']:
+                    contract_info['contract_size'] = contract_info['quanto_multiplier']
+                else:
+                    # quanto_multiplier가 없으면 기본값 사용 (추후 실제 거래에서 학습)
+                    base_symbol = symbol.split('_')[0]
+                    if base_symbol in ['XRP', 'DOGE']:
+                        contract_info['contract_size'] = 10
+                    elif base_symbol in ['BTC']:
+                        contract_info['contract_size'] = 0.0001
+                    elif base_symbol in ['ETH']:
+                        contract_info['contract_size'] = 0.01
+                    else:
+                        contract_info['contract_size'] = 1
+                
+                print(f"{get_kst_time()} 📋 [CONTRACT] {symbol} Contract Size: {contract_info['contract_size']}")
+                return contract_info
+                
+        except (ApiException, GateApiException) as e:
+            print(f"Contract 정보 조회 실패: {e}")
+            # 기본값 반환
+            base_symbol = symbol.split('_')[0]
+            if base_symbol in ['XRP', 'DOGE']:
+                contract_size = 10
+            elif base_symbol in ['BTC']:
+                contract_size = 0.0001
+            elif base_symbol in ['ETH']:
+                contract_size = 0.01
+            else:
+                contract_size = 1
+            
+            print(f"{get_kst_time()} 📋 [CONTRACT] {symbol} Contract Size (기본값): {contract_size}")
+            return {
+                'symbol': symbol,
+                'contract_size': contract_size,
+                'order_size_min': 1,
+                'order_size_max': 1000000
+            }
+
     def get_futures_positions(self) -> List[Dict]:
         """선물 포지션 조회"""
         try:
@@ -233,23 +329,61 @@ class GateIOConnector:
     def create_futures_order(self, symbol: str, side: str, size: float, 
                            order_type: str = "market", price: float = None,
                            time_in_force: str = "ioc") -> Dict:
-        """선물 주문 생성"""
+        """선물 주문 생성 (Contract Size 고려)"""
         try:
-            # 주문 객체 생성
-            order = gate_api.FuturesOrder(
-                contract=symbol,
-                size=int(size) if side == 'long' else -int(size),
-                price=str(price) if price else None,
-                tif=time_in_force
-            )
+            # 1. Contract 정보 조회하여 Contract Size 획득
+            contract_info = self.get_contract_info(symbol)
+            contract_size = contract_info.get('contract_size', 1)
+            
+            # 2. 실제 원하는 암호화폐 수량을 SDK 계약 단위로 변환
+            # 예: 10 XRP를 원하면 Contract Size가 10이므로 SDK에는 1계약 주문
+            sdk_size = size / contract_size
+            
+            print(f"{get_kst_time()} 📊 [ORDER] {symbol} 원하는 수량: {size} {symbol.split('_')[0]}")
+            print(f"{get_kst_time()} 📊 [ORDER] Contract Size: {contract_size}, SDK 주문: {sdk_size}계약")
+            
+            # 3. size 계산: long이면 양수, short이면 음수
+            order_size = sdk_size if side == 'long' else -sdk_size
+            
+            # 4. 정수로 변환 (Gate.io는 정수 크기 요구)
+            order_size_int = int(order_size)
+            if order_size_int == 0:
+                print(f"{get_kst_time()} ❌ [ERROR] 주문 크기가 0이 됨. 최소 1계약 이상 필요")
+                return {}
+            
+            # 5. 주문 객체 생성
+            if order_type == "market":
+                # 시장가 주문: price는 '0', tif는 'ioc'
+                order = gate_api.FuturesOrder(
+                    contract=symbol,
+                    size=order_size_int,
+                    price='0',  # 시장가는 '0'
+                    tif='ioc'   # 시장가는 보통 IOC
+                )
+            else:
+                # 지정가 주문
+                order = gate_api.FuturesOrder(
+                    contract=symbol,
+                    size=order_size_int,
+                    price=str(price),
+                    tif=time_in_force
+                )
             
             result = self.futures_api.create_futures_order(settle='usdt', futures_order=order)
+            
+            # 6. 실제 거래된 암호화폐 수량 계산
+            actual_contracts = abs(result.size)
+            actual_crypto_size = actual_contracts * contract_size
+            
+            print(f"{get_kst_time()} ✅ [ORDER] 실제 거래: {actual_contracts}계약 = {actual_crypto_size} {symbol.split('_')[0]}")
             
             return {
                 'order_id': result.id,
                 'symbol': result.contract,
                 'side': 'long' if result.size > 0 else 'short',
-                'size': abs(result.size),
+                'size': actual_crypto_size,  # 실제 암호화폐 수량
+                'contracts': actual_contracts,  # SDK 계약 수
+                'contract_size': contract_size,
                 'price': float(result.price) if result.price else 0,
                 'status': result.status,
                 'create_time': result.create_time
