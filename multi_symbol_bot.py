@@ -404,13 +404,22 @@ class MultiSymbolTradingBot:
     def open_position(self, symbol: str, signal: Signal, price: float):
         """포지션 진입"""
         try:
-            # 포지션 크기 계산 (총 시드의 10%를 사용)
-            total_allocation = self.balance * 0.10  # 총 시드의 10%
+            # 현재 사용 가능한 마진 확인
+            account_info = self.connector.get_futures_balance()
+            if account_info:
+                available_margin = float(account_info.get('available_balance', 0))
+                log_info("MARGIN", f"{symbol} 사용가능 마진: {available_margin:.2f} USDT", "💰")
+            else:
+                available_margin = self.balance
+                log_info("MARGIN", f"{symbol} 마진정보 없음, 시드 사용: {available_margin:.2f} USDT", "⚠️")
+            
+            # 안전한 포지션 크기 계산 (사용 가능한 마진의 50%만 사용)
+            safe_allocation = available_margin * 0.5
             
             # Contract Size를 고려한 크기 계산
             contract_size = self.get_contract_size(symbol)
-            # USDT 기준 할당 금액으로 구매할 수 있는 계약 수 계산
-            max_contracts = int((total_allocation * settings.trading.leverage) / (contract_size * price))
+            # 필요한 마진 = (계약 수 × Contract Size × 가격) / 레버리지
+            max_contracts = int((safe_allocation * settings.trading.leverage) / (contract_size * price))
             size = max(1, max_contracts)
             
             actual_amount = size * contract_size
@@ -558,9 +567,9 @@ class MultiSymbolTradingBot:
     
     def check_exit_conditions(self, position: Position, current_price: float) -> Optional[str]:
         """청산 조건 확인"""
-        # 시간 기반 청산 (10분)
-        if datetime.now() - position.entry_time > timedelta(minutes=10):
-            return "시간만료"
+        # 시간 기반 청산 제거 (타임아웃 없음)
+        # if datetime.now() - position.entry_time > timedelta(minutes=10):
+        #     return "시간만료"
         
         # 손절/익절
         if position.side == 'long':
