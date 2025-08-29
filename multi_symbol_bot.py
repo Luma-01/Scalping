@@ -268,8 +268,18 @@ class MultiSymbolTradingBot:
                 
                 if (signal.signal_type in ['BUY', 'SELL'] and 
                     signal.confidence >= 0.3 and
-                    self.is_signal_aligned_with_trend(signal.signal_type, htf_trend)):
+                    self.is_signal_aligned_with_trend(signal.signal_type, htf_trend, signal.confidence)):
                     
+                    # 진입 조건에 대한 상세 로그 추가
+                    trend_reason = ""
+                    if signal.confidence >= 0.7:
+                        trend_reason = "강한 신호로 역추세 진입"
+                    elif signal.confidence >= 0.5 and htf_trend == 'neutral':
+                        trend_reason = "중간 신호로 중립 트렌드 진입"
+                    elif (htf_trend == 'bullish' and signal.signal_type == 'BUY') or (htf_trend == 'bearish' and signal.signal_type == 'SELL'):
+                        trend_reason = "트렌드 일치 진입"
+                    
+                    log_info("ENTRY", f"{symbol} {signal.signal_type} 진입 승인: {trend_reason} (신뢰도: {signal.confidence:.2f})", "🚀")
                     self.open_position(symbol, signal, current_price)
                     
         except Exception as e:
@@ -298,12 +308,22 @@ class MultiSymbolTradingBot:
         except Exception:
             return 'neutral'
     
-    def is_signal_aligned_with_trend(self, signal_type: str, htf_trend: str) -> bool:
-        """신호가 HTF 트렌드와 일치하는지 확인"""
+    def is_signal_aligned_with_trend(self, signal_type: str, htf_trend: str, confidence: float = 0.0) -> bool:
+        """신호가 HTF 트렌드와 일치하는지 확인 (강한 신호는 역추세도 허용)"""
+        # 1. 강한 신호(0.7+ 신뢰도)는 트렌드 무관하게 진입 허용
+        if confidence >= 0.7:
+            return True
+            
+        # 2. 중간 강도 신호(0.5+ 신뢰도)는 neutral 트렌드에서도 허용
+        if confidence >= 0.5 and htf_trend == 'neutral':
+            return True
+            
+        # 3. 일반적인 트렌드 일치 확인
         if htf_trend == 'bullish' and signal_type == 'BUY':
             return True
         elif htf_trend == 'bearish' and signal_type == 'SELL':
             return True
+            
         return False
 
     def get_contract_size(self, symbol: str) -> float:
