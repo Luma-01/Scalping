@@ -65,6 +65,9 @@ class DiscordNotifier:
         color = settings.notifications.color_info
         direction_emoji = "📈" if side == "long" else "📉"
         
+        # 심볼에서 코인명 추출 (예: BTC_USDT -> BTC, LINK_USDT -> LINK)
+        coin_name = symbol.split('_')[0]
+        
         embed = {
             "title": f"{direction_emoji} 포지션 진입",
             "color": color,
@@ -72,7 +75,7 @@ class DiscordNotifier:
             "fields": [
                 {"name": "방향", "value": side.upper(), "inline": True},
                 {"name": "심볼", "value": symbol, "inline": True},
-                {"name": "사이즈", "value": f"{size} BTC", "inline": True},
+                {"name": "사이즈", "value": f"{size} {coin_name}", "inline": True},
                 {"name": "진입가", "value": f"{entry_price:,.2f} USDT", "inline": True},
                 {"name": "손절가", "value": f"{stop_loss:,.2f} USDT", "inline": True},
                 {"name": "익절가", "value": f"{take_profit:,.2f} USDT", "inline": True}
@@ -94,6 +97,9 @@ class DiscordNotifier:
         color = settings.notifications.color_profit if is_profit else settings.notifications.color_loss
         result_emoji = "✅" if is_profit else "❌"
         
+        # 심볼에서 코인명 추출 (예: BTC_USDT -> BTC, LINK_USDT -> LINK)
+        coin_name = symbol.split('_')[0]
+        
         embed = {
             "title": f"{result_emoji} 포지션 청산",
             "color": color,
@@ -101,7 +107,7 @@ class DiscordNotifier:
             "fields": [
                 {"name": "방향", "value": side.upper(), "inline": True},
                 {"name": "심볼", "value": symbol, "inline": True},
-                {"name": "사이즈", "value": f"{size} BTC", "inline": True},
+                {"name": "사이즈", "value": f"{size} {coin_name}", "inline": True},
                 {"name": "진입가", "value": f"{entry_price:,.2f} USDT", "inline": True},
                 {"name": "청산가", "value": f"{exit_price:,.2f} USDT", "inline": True},
                 {"name": "청산사유", "value": exit_reason, "inline": True},
