@@ -404,20 +404,23 @@ class MultiSymbolTradingBot:
     def open_position(self, symbol: str, signal: Signal, price: float):
         """포지션 진입"""
         try:
-            # 포지션 크기 계산 (총 시드의 10%를 15개 심볼에 분산)
+            # 포지션 크기 계산 (총 시드의 10%를 사용)
             total_allocation = self.balance * 0.10  # 총 시드의 10%
-            per_symbol_allocation = total_allocation / len(self.trading_symbols)  # 심볼당 할당
             
             # Contract Size를 고려한 크기 계산
             contract_size = self.get_contract_size(symbol)
-            max_contracts = int((per_symbol_allocation * settings.trading.leverage) / (contract_size * price))
+            # USDT 기준 할당 금액으로 구매할 수 있는 계약 수 계산
+            max_contracts = int((total_allocation * settings.trading.leverage) / (contract_size * price))
             size = max(1, max_contracts)
             
             actual_amount = size * contract_size
             coin_name = symbol.split('_')[0]
             
-            # Contract Size 정보 표시 (1이어도 정상)
+            # Contract Size 정보 표시
             log_info("CONTRACT", f"{symbol}: {size} 계약 = {actual_amount} {coin_name} (Contract Size: {contract_size})", "📋")
+            log_info("ORDER", f"{symbol} 원하는 수량: {actual_amount} {coin_name}", "📊")
+            log_info("ORDER", f"Contract Size: {contract_size}, SDK 주문: {size}계약", "📊")
+            log_info("ORDER", f"실제 거래: {size}계약 = {actual_amount} {coin_name}", "✅")
             
             if size <= 0:
                 return
@@ -438,7 +441,7 @@ class MultiSymbolTradingBot:
                     self.learn_contract_size(symbol, size, order_actual_size)
                 
                 # ATR 기반 동적 익절/손절 계산
-                market_data = self.collect_market_data(symbol)
+                market_data = self.market_data.get(symbol)
                 if market_data and 'ltf' in market_data and not market_data['ltf'].empty:
                     df = market_data['ltf']
                     if len(df) >= settings.trading.atr_period:
