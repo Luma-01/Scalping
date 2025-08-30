@@ -335,11 +335,11 @@ class GateIOConnector:
             contract_info = self.get_contract_info(symbol)
             contract_size = contract_info.get('contract_size', 1)
             
-            # 2. 실제 원하는 암호화폐 수량을 SDK 계약 단위로 변환
-            # 예: 10 XRP를 원하면 Contract Size가 10이므로 SDK에는 1계약 주문
-            sdk_size = size / contract_size
+            # 2. size는 이미 계약 수이므로 그대로 사용 (multi_symbol_bot에서 계산됨)
+            sdk_size = size
+            actual_crypto_amount = size * contract_size
             
-            print(f"{get_kst_time()} 📊 [ORDER] {symbol} 원하는 수량: {size} {symbol.split('_')[0]}")
+            print(f"{get_kst_time()} 📊 [ORDER] {symbol} 원하는 수량: {size} 계약 = {actual_crypto_amount} {symbol.split('_')[0]}")
             print(f"{get_kst_time()} 📊 [ORDER] Contract Size: {contract_size}, SDK 주문: {sdk_size}계약")
             
             # 3. size 계산: long이면 양수, short이면 음수

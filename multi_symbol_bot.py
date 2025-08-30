@@ -415,17 +415,9 @@ class MultiSymbolTradingBot:
     def open_position(self, symbol: str, signal: Signal, price: float):
         """포지션 진입"""
         try:
-            # 현재 사용 가능한 마진 확인
-            account_info = self.connector.get_futures_balance()
-            if account_info:
-                available_margin = float(account_info.get('available_balance', 0))
-                log_info("MARGIN", f"{symbol} 사용가능 마진: {available_margin:.2f} USDT", "💰")
-            else:
-                available_margin = self.balance
-                log_info("MARGIN", f"{symbol} 마진정보 없음, 시드 사용: {available_margin:.2f} USDT", "⚠️")
-            
-            # 안전한 포지션 크기 계산 (사용 가능한 마진의 50%만 사용)
-            safe_allocation = available_margin * 0.5
+            # 총 시드의 10% 사용으로 변경
+            safe_allocation = self.balance * 0.10
+            log_info("ALLOCATION", f"{symbol} 시드 배분: {safe_allocation:.2f} USDT (총 시드의 10%)", "💰")
             
             # Contract Size를 고려한 크기 계산 (API에서 정확한 값 조회)
             contract_info = self.connector.get_contract_info(symbol)
@@ -436,13 +428,12 @@ class MultiSymbolTradingBot:
             else:
                 contract_size = self.get_contract_size(symbol)
             
-            # 필요한 마진 = (계약 수 × Contract Size × 가격) / 레버리지
-            # 따라서 계약 수 = (사용할 마진 × 레버리지) / (Contract Size × 가격)
-            required_margin_per_contract = (contract_size * price) / settings.trading.leverage
+            # 필요한 마진 = (Contract Size × 가격) / 레버리지 (50배 고정)
+            required_margin_per_contract = (contract_size * price) / 50
             max_contracts = int(safe_allocation / required_margin_per_contract)
             size = max(1, max_contracts)
             
-            log_info("CALC", f"{symbol} 마진계산: {safe_allocation:.2f} USDT ÷ {required_margin_per_contract:.6f} = {max_contracts} 계약", "🧮")
+            log_info("CALC", f"{symbol} 마진계산: {safe_allocation:.2f} USDT ÷ {required_margin_per_contract:.6f} = {max_contracts} 계약 (50배)", "🧮")
             
             actual_amount = size * contract_size
             coin_name = symbol.split('_')[0]
