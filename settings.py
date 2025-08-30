@@ -73,6 +73,16 @@ class TradingSettings:
     strong_signal_threshold: float = 0.70   # 강한 신호 (역추세 진입 허용)
     neutral_signal_threshold: float = 0.50  # 중립 트렌드 진입 허용
     
+    # =================== 횡보 전략 설정 ===================
+    enable_sideways_strategy: bool = True   # 횡보 전략 활성화
+    sideways_detection_method: str = "oscillation"  # oscillation, range, consecutive_holds
+    sideways_lookback_period: int = 10      # 횡보 감지 기간 (캔들 수)
+    bollinger_period: int = 20              # 볼린저 밴드 기간
+    bollinger_std_dev: float = 2.0          # 볼린저 밴드 표준편차
+    sideways_min_oscillations: int = 2      # 최소 진동 횟수
+    sideways_max_oscillations: int = 4      # 최대 진동 횟수
+    sideways_max_range_pct: float = 0.02    # 최대 가격 레인지 (2%)
+    
     # =================== 리스크 관리 ===================
     max_daily_loss_pct: float = 0.5       # 일일 최대 손실 50%
     max_consecutive_losses: int = 0         # 연속 손실 후 중단 (0=비활성화)

@@ -165,6 +165,91 @@ class OptimizedPriceActionStrategy:
         return Signal(action, current_time, current['close'], confidence, reason)
 
 
+class SidewaysDetector:
+    """횡보장 감지 클래스"""
+    
+    def __init__(self):
+        pass
+    
+    def detect_oscillation_pattern(self, df: pd.DataFrame, idx: int) -> bool:
+        """방법 C: 가격 진동 패턴 감지 (백테스트에서 가장 좋은 성능)"""
+        lookback = settings.trading.sideways_lookback_period
+        
+        if idx < lookback:
+            return False
+            
+        recent_data = df.iloc[max(0, idx-lookback):idx+1]
+        highs = recent_data['high'].values
+        lows = recent_data['low'].values
+        
+        # 고점/저점 카운트
+        high_peaks = 0
+        low_valleys = 0
+        
+        for i in range(1, len(highs)-1):
+            if highs[i] > highs[i-1] and highs[i] > highs[i+1]:
+                high_peaks += 1
+            if lows[i] < lows[i-1] and lows[i] < lows[i+1]:
+                low_valleys += 1
+        
+        # 진동 패턴 조건
+        min_osc = settings.trading.sideways_min_oscillations
+        max_osc = settings.trading.sideways_max_oscillations
+        max_range_pct = settings.trading.sideways_max_range_pct
+        
+        total_range = (recent_data['high'].max() - recent_data['low'].min()) / recent_data['close'].iloc[-1]
+        
+        return (high_peaks >= min_osc and low_valleys >= min_osc and 
+                high_peaks <= max_osc and low_valleys <= max_osc and
+                total_range < max_range_pct)
+
+
+class BollingerBandStrategy:
+    """볼린저 밴드 횡보 전략"""
+    
+    def __init__(self):
+        self.period = settings.trading.bollinger_period
+        self.std_dev = settings.trading.bollinger_std_dev
+    
+    def calculate_bands(self, df: pd.DataFrame, idx: int) -> tuple:
+        """볼린저 밴드 계산"""
+        if idx < self.period:
+            current_close = df.iloc[idx]['close']
+            return current_close, current_close, current_close
+            
+        recent_closes = df.iloc[max(0, idx-self.period+1):idx+1]['close']
+        middle = recent_closes.mean()
+        std = recent_closes.std()
+        
+        upper = middle + (self.std_dev * std)
+        lower = middle - (self.std_dev * std)
+        
+        return upper, middle, lower
+    
+    def get_sideways_signal(self, df: pd.DataFrame, idx: int) -> Signal:
+        """볼린저 밴드 횡보 신호 생성"""
+        current = df.iloc[idx]
+        current_price = current['close']
+        current_time = current['timestamp'] if 'timestamp' in df.columns else datetime.now()
+        
+        upper, middle, lower = self.calculate_bands(df, idx)
+        
+        # 밴드 폭 확인
+        band_width = (upper - lower) / middle
+        if band_width < 0.01:  # 1% 미만
+            return Signal('HOLD', current_time, current_price, 0.0, "밴드폭 부족")
+        
+        # 횡보 신호 생성
+        if current_price >= upper * 0.995:  # 상단 밴드 근처
+            confidence = min(0.8, (current_price - upper) / (upper - middle) + 0.5)
+            return Signal('SELL', current_time, current_price, confidence, f"횡보-BB상단터치")
+        elif current_price <= lower * 1.005:  # 하단 밴드 근처  
+            confidence = min(0.8, (lower - current_price) / (middle - lower) + 0.5)
+            return Signal('BUY', current_time, current_price, confidence, f"횡보-BB하단터치")
+        else:
+            return Signal('HOLD', current_time, current_price, 0.0, "횡보-BB중간영역")
+
+
 class FinalHighFrequencyStrategy:
     """최종 고빈도 스켈핑 전략 - 검증된 최적 설정"""
     
@@ -193,6 +278,10 @@ class FinalHighFrequencyStrategy:
         
         self.price_action = OptimizedPriceActionStrategy(self.config)
         self.indicators = TechnicalIndicators()
+        
+        # 횡보 전략 추가
+        self.sideways_detector = SidewaysDetector()
+        self.sideways_strategy = BollingerBandStrategy()
         
         # 성과 추적
         self.signals_generated = 0
@@ -223,31 +312,44 @@ class FinalHighFrequencyStrategy:
         if self.last_signal_time and (current_time - self.last_signal_time).total_seconds() < 60:
             return Signal('HOLD', current_time, current['close'], 0.0, "신호 간격 부족")
         
-        # 4. 메인 프라이스 액션 신호
-        signal = self.price_action.enhanced_price_action_signal(df, idx)
+        # 4. 횡보 감지 및 전략 선택
+        is_sideways = False
+        if settings.trading.enable_sideways_strategy:
+            is_sideways = self.sideways_detector.detect_oscillation_pattern(df, idx)
         
-        # 5. 추가 필터링
+        # 5. 신호 생성 (횡보 vs 추세)
+        if is_sideways:
+            signal = self.sideways_strategy.get_sideways_signal(df, idx)
+        else:
+            signal = self.price_action.enhanced_price_action_signal(df, idx)
+        
+        # 6. 추가 필터링 (횡보 전략일 때는 간소화)
         if signal.signal_type in ['BUY', 'SELL']:
-            # 거래량 확인
-            if self.config['use_volume_filter']:
-                volume_ok = self._check_volume_confirmation(df, idx)
-                if not volume_ok:
-                    signal.confidence *= 0.7  # 신뢰도 감소
-                    signal.reason += " (거래량부족)"
-            
-            # 시장 구조 확인
-            market_structure = self._analyze_market_structure(df, idx)
-            if market_structure == 'choppy':
-                signal.confidence *= 0.8
-                signal.reason += " (횡보장)"
-            elif market_structure == 'trending':
-                signal.confidence *= 1.1
-                signal.reason += " (추세장)"
+            if not is_sideways:
+                # 추세 전략에만 적용하는 필터
+                if self.config['use_volume_filter']:
+                    volume_ok = self._check_volume_confirmation(df, idx)
+                    if not volume_ok:
+                        signal.confidence *= 0.7
+                        signal.reason += " (거래량부족)"
+                
+                # 시장 구조 확인
+                market_structure = self._analyze_market_structure(df, idx)
+                if market_structure == 'choppy':
+                    signal.confidence *= 0.8
+                    signal.reason += " (횡보장)"
+                elif market_structure == 'trending':
+                    signal.confidence *= 1.1
+                    signal.reason += " (추세장)"
             
             # 최종 신뢰도 확인
             if signal.confidence >= self.config['min_confidence']:
                 self.signals_generated += 1
                 self.last_signal_time = current_time
+                
+                # 전략 유형 표시
+                strategy_type = "횡보전략" if is_sideways else "추세전략"
+                signal.reason = f"[{strategy_type}] " + signal.reason
                 
                 return Signal(
                     signal.signal_type,
