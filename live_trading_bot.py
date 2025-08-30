@@ -175,7 +175,7 @@ class LiveTradingBot:
             return False
         
         # 일일 손실 한도 확인
-        if self.daily_pnl < -self.daily_start_balance * settings.trading.max_daily_loss:
+        if self.daily_pnl < -self.daily_start_balance * settings.trading.max_daily_loss_pct:
             logger.warning("일일 손실 한도 도달")
             return False
         

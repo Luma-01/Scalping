@@ -415,9 +415,9 @@ class MultiSymbolTradingBot:
     def open_position(self, symbol: str, signal: Signal, price: float):
         """포지션 진입"""
         try:
-            # 총 시드의 10% 사용으로 변경
-            safe_allocation = self.balance * 0.10
-            log_info("ALLOCATION", f"{symbol} 시드 배분: {safe_allocation:.2f} USDT (총 시드의 10%)", "💰")
+            # settings에서 포지션 크기 비율 가져오기
+            safe_allocation = self.balance * settings.trading.position_size_pct
+            log_info("ALLOCATION", f"{symbol} 시드 배분: {safe_allocation:.2f} USDT (총 시드의 {settings.trading.position_size_pct:.1%})", "💰")
             
             # Contract Size를 고려한 크기 계산 (API에서 정확한 값 조회)
             contract_info = self.connector.get_contract_info(symbol)
@@ -428,12 +428,12 @@ class MultiSymbolTradingBot:
             else:
                 contract_size = self.get_contract_size(symbol)
             
-            # 필요한 마진 = (Contract Size × 가격) / 레버리지 (50배 고정)
-            required_margin_per_contract = (contract_size * price) / 50
+            # 필요한 마진 = (Contract Size × 가격) / 레버리지 (settings에서 가져옴)
+            required_margin_per_contract = (contract_size * price) / settings.trading.leverage
             max_contracts = int(safe_allocation / required_margin_per_contract)
             size = max(1, max_contracts)
             
-            log_info("CALC", f"{symbol} 마진계산: {safe_allocation:.2f} USDT ÷ {required_margin_per_contract:.6f} = {max_contracts} 계약 (50배)", "🧮")
+            log_info("CALC", f"{symbol} 마진계산: {safe_allocation:.2f} USDT ÷ {required_margin_per_contract:.6f} = {max_contracts} 계약 ({settings.trading.leverage}배)", "🧮")
             
             actual_amount = size * contract_size
             coin_name = symbol.split('_')[0]
