@@ -81,6 +81,9 @@ class MultiSymbolTradingBot:
         self.trades_today = []
         self.daily_start_balance = 0.0
         
+        # 동적 심볼 리스트 관리 (매시 정각 업데이트)
+        self.last_symbol_update_hour = -1  # 마지막 업데이트한 시간
+        
         # Contract Size 캐시 (동적으로 학습)
         self.contract_sizes = self.load_contract_sizes()  # {symbol: contract_size}
         
@@ -352,6 +355,7 @@ class MultiSymbolTradingBot:
             'ETH_USDT': 0.01,
             'DOGE_USDT': 10,
             'SOL_USDT': 1,
+            'PYTH_USDT': 10,  # 거래소 확인된 정확한 값
             'PEPE_USDT': 10000000,  # PEPE는 천만개 단위
             'FARTCOIN_USDT': 1,
         }
@@ -387,9 +391,16 @@ class MultiSymbolTradingBot:
             log_info("SAVE", f"Contract Size 파일 저장 실패: {e}", "⚠️")
     
     def learn_contract_size(self, symbol: str, sdk_size: float, actual_size: float):
-        """주문 결과를 통해 Contract Size 학습"""
+        """주문 결과를 통해 Contract Size 학습 (부분 체결시 학습 안 함)"""
         if sdk_size > 0:
             detected_size = actual_size / sdk_size
+            
+            # 부분 체결인 경우 학습하지 않음 (잘못된 Contract Size 학습 방지)
+            expected_size = sdk_size * self.get_contract_size(symbol)
+            if abs(actual_size - expected_size) > expected_size * 0.1:  # 10% 이상 차이나면 부분 체결로 판단
+                log_info("SKIP", f"{symbol} 부분 체결 감지 - Contract Size 학습 안 함 (예상: {expected_size:.1f}, 실제: {actual_size:.1f})", "⚠️")
+                return
+            
             # 기존 값과 다르면 업데이트
             if symbol not in self.contract_sizes or abs(self.contract_sizes[symbol] - detected_size) > 0.0001:
                 self.contract_sizes[symbol] = detected_size
@@ -416,11 +427,22 @@ class MultiSymbolTradingBot:
             # 안전한 포지션 크기 계산 (사용 가능한 마진의 50%만 사용)
             safe_allocation = available_margin * 0.5
             
-            # Contract Size를 고려한 크기 계산
-            contract_size = self.get_contract_size(symbol)
+            # Contract Size를 고려한 크기 계산 (API에서 정확한 값 조회)
+            contract_info = self.connector.get_contract_info(symbol)
+            if contract_info and 'contract_size' in contract_info:
+                contract_size = contract_info['contract_size']
+                # 정확한 값으로 캐시 업데이트
+                self.contract_sizes[symbol] = contract_size
+            else:
+                contract_size = self.get_contract_size(symbol)
+            
             # 필요한 마진 = (계약 수 × Contract Size × 가격) / 레버리지
-            max_contracts = int((safe_allocation * settings.trading.leverage) / (contract_size * price))
+            # 따라서 계약 수 = (사용할 마진 × 레버리지) / (Contract Size × 가격)
+            required_margin_per_contract = (contract_size * price) / settings.trading.leverage
+            max_contracts = int(safe_allocation / required_margin_per_contract)
             size = max(1, max_contracts)
+            
+            log_info("CALC", f"{symbol} 마진계산: {safe_allocation:.2f} USDT ÷ {required_margin_per_contract:.6f} = {max_contracts} 계약", "🧮")
             
             actual_amount = size * contract_size
             coin_name = symbol.split('_')[0]
@@ -585,12 +607,59 @@ class MultiSymbolTradingBot:
         
         return None
     
+    def update_trading_symbols(self):
+        """거래량 상위 심볼 업데이트"""
+        try:
+            log_info("UPDATE", "거래량 상위 심볼 업데이트 시작...", "🔄")
+            
+            # 거래량 상위 심볼 재조회
+            new_symbols = self.connector.get_top_volume_symbols(
+                settings.trading.symbols_count
+            )
+            
+            if new_symbols:
+                # 기존 심볼과 비교
+                added_symbols = set(new_symbols) - set(self.trading_symbols)
+                removed_symbols = set(self.trading_symbols) - set(new_symbols)
+                
+                if added_symbols or removed_symbols:
+                    log_info("SYMBOLS", f"심볼 변경: +{len(added_symbols)} -{len(removed_symbols)}", "📊")
+                    if added_symbols:
+                        log_info("ADDED", f"추가: {', '.join(added_symbols)}", "➕")
+                    if removed_symbols:
+                        log_info("REMOVED", f"제거: {', '.join(removed_symbols)}", "➖")
+                        
+                        # 제거된 심볼의 포지션이 있으면 청산
+                        for symbol in removed_symbols:
+                            if symbol in self.positions:
+                                try:
+                                    current_price = self.connector.get_futures_ticker(symbol)['last_price']
+                                    self.close_position(symbol, "심볼제거", current_price)
+                                    log_info("CLOSE", f"{symbol} 심볼 제거로 포지션 청산", "🔄")
+                                except:
+                                    pass
+                
+                self.trading_symbols = new_symbols
+                log_success(f"심볼 업데이트 완료: {len(self.trading_symbols)}개")
+            
+        except Exception as e:
+            log_error(f"심볼 업데이트 실패: {e}")
+    
     def trading_loop(self):
         """메인 거래 루프"""
         log_info("START", "다중 심볼 고빈도 거래 시작", "🚀")
         
         while self.running:
             try:
+                # 매시 정각에 거래량 상위 심볼 업데이트
+                current_time = datetime.now()
+                current_hour = current_time.hour
+                
+                if (current_hour != self.last_symbol_update_hour and 
+                    current_time.minute == 0 and current_time.second < 10):  # 정각 10초 이내
+                    self.update_trading_symbols()
+                    self.last_symbol_update_hour = current_hour
+                
                 # 데이터 수집 상태 리셋
                 self.data_success_count = 0
                 self.data_error_count = 0

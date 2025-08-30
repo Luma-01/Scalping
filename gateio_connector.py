@@ -406,6 +406,105 @@ class GateIOConnector:
             print(f"주문 취소 실패: {e}")
             return False
     
+    def get_futures_trades(self, start_time: int = None, end_time: int = None, 
+                          symbol: str = None, limit: int = 100) -> List[Dict]:
+        """선물 거래내역 조회
+        
+        Args:
+            start_time: 시작 시간 (timestamp)
+            end_time: 종료 시간 (timestamp)  
+            symbol: 심볼 (None이면 전체)
+            limit: 조회 개수
+        """
+        try:
+            trades = []
+            
+            if symbol:
+                # 특정 심볼의 거래내역
+                result = self.futures_api.list_my_trades(
+                    settle='usdt',
+                    contract=symbol,
+                    from_=start_time,
+                    to=end_time,
+                    limit=limit
+                )
+                trades.extend(result)
+            else:
+                # 전체 심볼의 거래내역 (최근 거래된 심볼들 조회)
+                try:
+                    # 먼저 최근 거래 기록이 있는 심볼들 찾기
+                    recent_symbols = set()
+                    
+                    # 계정의 포지션 기록에서 심볼 추출
+                    positions = self.futures_api.list_positions(settle='usdt')
+                    for pos in positions:
+                        if float(pos.size) != 0:  # 포지션이 있는 심볼
+                            recent_symbols.add(pos.contract)
+                    
+                    # 각 심볼별로 거래내역 조회
+                    for symbol_name in recent_symbols:
+                        try:
+                            symbol_trades = self.futures_api.list_my_trades(
+                                settle='usdt',
+                                contract=symbol_name,
+                                from_=start_time,
+                                to=end_time,
+                                limit=limit
+                            )
+                            trades.extend(symbol_trades)
+                        except Exception as e:
+                            continue  # 해당 심볼 조회 실패시 넘어감
+                    
+                except Exception:
+                    # 포지션 조회 실패시 주요 심볼들로 시도
+                    major_symbols = ['BTC_USDT', 'ETH_USDT', 'XRP_USDT', 'SOL_USDT', 'DOGE_USDT']
+                    for symbol_name in major_symbols:
+                        try:
+                            symbol_trades = self.futures_api.list_my_trades(
+                                settle='usdt',
+                                contract=symbol_name,
+                                from_=start_time,
+                                to=end_time,
+                                limit=limit
+                            )
+                            trades.extend(symbol_trades)
+                        except Exception:
+                            continue
+            
+            # 결과를 Dict 형태로 변환
+            trade_list = []
+            for trade in trades:
+                trade_dict = {
+                    'id': trade.id,
+                    'create_time': trade.create_time,
+                    'contract': trade.contract,
+                    'order_id': trade.order_id,
+                    'size': float(trade.size),
+                    'price': float(trade.price),
+                    'role': trade.role,  # taker, maker
+                    'text': getattr(trade, 'text', ''),
+                    'fee': float(getattr(trade, 'fee', 0)),
+                    'point_fee': float(getattr(trade, 'point_fee', 0))
+                }
+                
+                # PnL 계산 (대략적)
+                if hasattr(trade, 'pnl'):
+                    trade_dict['pnl'] = float(trade.pnl)
+                else:
+                    trade_dict['pnl'] = 0
+                
+                trade_list.append(trade_dict)
+            
+            # 시간순 정렬
+            trade_list.sort(key=lambda x: x['create_time'], reverse=True)
+            
+            print(f"{get_kst_time()} 📊 [TRADES] {len(trade_list)}개 거래내역 조회 완료")
+            return trade_list
+            
+        except (ApiException, GateApiException) as e:
+            print(f"{get_kst_time()} ❌ [ERROR] 거래내역 조회 실패: {e}")
+            return []
+    
     def get_futures_orders(self, symbol: str, status: str = "open") -> List[Dict]:
         """선물 주문 조회"""
         try:
