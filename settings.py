@@ -37,7 +37,7 @@ class TradingSettings:
     
     # =================== 포지션 관리 ===================
     position_size_pct: float = 0.10        # 총 시드의 10% 사용
-    leverage: int = 50                      # 50배 레버리지 (고빈도 거래용)
+    leverage: int = 20                      # 20배 레버리지
     max_open_positions: int = 10             # 최대 동시 포지션 수
     
     # =================== 심볼 관리 ===================  
@@ -74,7 +74,7 @@ class TradingSettings:
     neutral_signal_threshold: float = 0.50  # 중립 트렌드 진입 허용
     
     # =================== 횡보 전략 설정 ===================
-    enable_sideways_strategy: bool = True   # 횡보 전략 활성화
+    enable_sideways_strategy: bool = False  # 횡보 전략 비활성화
     sideways_detection_method: str = "oscillation"  # oscillation, range, consecutive_holds
     sideways_lookback_period: int = 10      # 횡보 감지 기간 (캔들 수)
     bollinger_period: int = 20              # 볼린저 밴드 기간
