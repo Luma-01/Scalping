@@ -65,8 +65,8 @@ class TradingSettings:
     
     # ATR 설정
     atr_period: int = 14                    # ATR 계산 기간
-    stop_loss_atr_mult: float = 2.5         # 손절 ATR 배수
-    take_profit_atr_mult: float = 3.5       # 익절 ATR 배수
+    stop_loss_atr_mult: float = 2.0         # 손절 ATR 배수
+    take_profit_atr_mult: float = 4.0       # 익절 ATR 배수
     
     # =================== 신호 필터링 ===================
     confidence_threshold: float = 0.40      # 최소 진입 신뢰도
