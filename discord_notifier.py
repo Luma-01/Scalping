@@ -69,8 +69,9 @@ class DiscordNotifier:
         # 심볼에서 코인명 추출 (예: BTC_USDT -> BTC, LINK_USDT -> LINK)
         coin_name = symbol.split('_')[0]
         
-        # 진입 시드 계산 (사이즈 * 진입가)
-        position_value = size * entry_price
+        # 실제 진입 시드 계산 (레버리지 고려한 증거금)
+        from settings import settings
+        position_value = (size * entry_price) / settings.trading.leverage
         
         # 기본 필드들
         fields = [
@@ -108,8 +109,9 @@ class DiscordNotifier:
         # 심볼에서 코인명 추출 (예: BTC_USDT -> BTC, LINK_USDT -> LINK)
         coin_name = symbol.split('_')[0]
         
-        # 진입 시드 계산 (사이즈 * 진입가)
-        position_value = size * entry_price
+        # 실제 진입 시드 계산 (레버리지 고려한 증거금)
+        from settings import settings
+        position_value = (size * entry_price) / settings.trading.leverage
         
         # 기본 필드들
         fields = [
