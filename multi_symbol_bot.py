@@ -128,12 +128,18 @@ class MultiSymbolTradingBot:
                     settings.trading.symbols_count
                 )
                 
-                # 각 심볼별 레버리지 설정
+                # 각 심볼별 레버리지 및 마진 모드 설정
                 log_info("LEVERAGE", f"레버리지 {settings.trading.leverage}배 설정 중...", "⚙️")
                 for symbol in self.trading_symbols:
+                    # 레버리지 설정
                     result = self.connector.set_leverage(symbol, settings.trading.leverage)
                     if not result:
                         log_info("WARNING", f"{symbol} 레버리지 설정 실패 (기존값 유지)", "⚠️")
+                    
+                    # Isolated 모드 설정
+                    margin_result = self.connector.set_position_mode_isolated(symbol)
+                    if not margin_result:
+                        log_info("WARNING", f"{symbol} Isolated 모드 설정 실패 (기존값 유지)", "⚠️")
             
             log_success(f"거래 대상 설정 완료: {len(self.trading_symbols)}개 심볼")
             

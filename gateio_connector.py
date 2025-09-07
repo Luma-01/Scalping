@@ -162,6 +162,22 @@ class GateIOConnector:
             print(f"{get_kst_time()} ❌ [ERROR] 레버리지 설정 실패: {symbol} - {e}")
             return False
     
+    def set_position_mode_isolated(self, symbol: str) -> bool:
+        """포지션 모드를 Isolated로 설정"""
+        try:
+            # Gate.io API를 사용하여 Isolated 모드로 설정
+            result = self.futures_api.update_position_margin(
+                settle='usdt',
+                contract=symbol,
+                change='0',  # 마진 변경량 (0 = 모드만 변경)
+                cross=False  # False = Isolated, True = Cross
+            )
+            print(f"{get_kst_time()} ✅ [MARGIN] {symbol} = Isolated Mode")
+            return True
+        except (ApiException, GateApiException) as e:
+            print(f"{get_kst_time()} ❌ [MARGIN] {symbol} Isolated 설정 실패: {str(e)}")
+            return False
+    
     def get_top_volume_symbols(self, limit: int = 15) -> List[str]:
         """거래량 상위 심볼 조회 - 안정적인 주요 심볼 사용"""
         # Gate.io 선물 거래에서 실제 거래량이 높은 주요 심볼들 (2025년 1월 기준)

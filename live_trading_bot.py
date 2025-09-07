@@ -101,7 +101,7 @@ class LiveTradingBot:
                     logger.error("계정 정보를 가져올 수 없습니다")
                     return False
             
-            # 레버리지 설정 (실제 거래 모드만)
+            # 레버리지 및 마진 모드 설정 (실제 거래 모드만)
             if not simulation_mode:
                 leverage_set = self.connector.set_leverage(
                     settings.trading.symbol, 
@@ -109,6 +109,11 @@ class LiveTradingBot:
                 )
                 if not leverage_set:
                     logger.warning(f"레버리지 설정 실패 - 기본값 사용")
+                
+                # Isolated 모드 설정
+                margin_set = self.connector.set_position_mode_isolated(settings.trading.symbol)
+                if not margin_set:
+                    logger.warning(f"Isolated 모드 설정 실패 - 기본값 사용")
             
             # 거래 대상 심볼 조회 (거래량 상위 15개)
             if not simulation_mode:
