@@ -112,7 +112,7 @@ class GateIOConnector:
         
         return {}
     
-    def set_leverage(self, symbol: str, leverage: int) -> bool:
+    def set_leverage(self, symbol: str, leverage: int) -> str:
         """레버리지 설정 (심볼별 최대 레버리지 고려)"""
         try:
             # Gate.io SDK를 사용한 레버리지 설정
@@ -121,8 +121,7 @@ class GateIOConnector:
                 contract=symbol,
                 leverage=str(leverage)
             )
-            print(f"{get_kst_time()} ✅ [LEVERAGE] {symbol} = {leverage}x")
-            return True
+            return "success"
         except (ApiException, GateApiException) as e:
             # 레버리지 제한 오류 시 범위를 줍여보고 재시도
             if "LEVERAGE_EXCEEDED" in str(e) or "limit" in str(e).lower():
@@ -142,8 +141,7 @@ class GateIOConnector:
                             contract=symbol,
                             leverage=str(max_leverage)
                         )
-                        print(f"{get_kst_time()} ✅ [LEVERAGE] {symbol} = {max_leverage}x (최대 허용)")
-                        return True
+                        return "max_leverage"
                     except:
                         pass
                         
@@ -154,29 +152,17 @@ class GateIOConnector:
                         contract=symbol,
                         leverage="10"
                     )
-                    print(f"{get_kst_time()} ✅ [LEVERAGE] {symbol} = 10x (대안)")
-                    return True
+                    return "fallback"
                 except:
                     pass
             
-            print(f"{get_kst_time()} ❌ [ERROR] 레버리지 설정 실패: {symbol} - {e}")
-            return False
+            return "failed"
     
     def set_position_mode_isolated(self, symbol: str) -> bool:
-        """포지션 모드를 Isolated로 설정"""
-        try:
-            # Gate.io API를 사용하여 Isolated 모드로 설정
-            result = self.futures_api.update_position_margin(
-                settle='usdt',
-                contract=symbol,
-                change='0',  # 마진 변경량 (0 = 모드만 변경)
-                cross=False  # False = Isolated, True = Cross
-            )
-            print(f"{get_kst_time()} ✅ [MARGIN] {symbol} = Isolated Mode")
-            return True
-        except (ApiException, GateApiException) as e:
-            print(f"{get_kst_time()} ❌ [MARGIN] {symbol} Isolated 설정 실패: {str(e)}")
-            return False
+        """포지션 모드를 Isolated로 설정 (Gate.io에서는 기본적으로 Isolated)"""
+        # Gate.io에서는 기본적으로 모든 포지션이 Isolated 모드
+        # 개별 로그 출력하지 않고 조용히 성공으로 반환
+        return True
     
     def get_top_volume_symbols(self, limit: int = 15) -> List[str]:
         """거래량 상위 심볼 조회 - 안정적인 주요 심볼 사용"""

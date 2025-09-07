@@ -103,12 +103,14 @@ class LiveTradingBot:
             
             # 레버리지 및 마진 모드 설정 (실제 거래 모드만)
             if not simulation_mode:
-                leverage_set = self.connector.set_leverage(
+                leverage_result = self.connector.set_leverage(
                     settings.trading.symbol, 
                     settings.trading.leverage
                 )
-                if not leverage_set:
+                if leverage_result == "failed":
                     logger.warning(f"레버리지 설정 실패 - 기본값 사용")
+                elif leverage_result == "max_leverage":
+                    logger.info(f"최대 레버리지로 자동 설정됨")
                 
                 # Isolated 모드 설정
                 margin_set = self.connector.set_position_mode_isolated(settings.trading.symbol)

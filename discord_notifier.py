@@ -57,7 +57,8 @@ class DiscordNotifier:
         return self._send_embed(embed)
     
     def send_position_opened(self, side: str, symbol: str, entry_price: float, 
-                           size: float, stop_loss: float, take_profit: float) -> bool:
+                           size: float, stop_loss: float, take_profit: float, 
+                           allocated_amount: float = None) -> bool:
         """포지션 진입 알림"""
         if not settings.notifications.notify_on_trade:
             return False
@@ -68,18 +69,24 @@ class DiscordNotifier:
         # 심볼에서 코인명 추출 (예: BTC_USDT -> BTC, LINK_USDT -> LINK)
         coin_name = symbol.split('_')[0]
         
+        # 진입 시드 계산 (사이즈 * 진입가)
+        position_value = size * entry_price
+        
+        # 기본 필드들
+        fields = [
+            {"name": "방향", "value": side.upper(), "inline": True},
+            {"name": "심볼", "value": symbol, "inline": True},
+            {"name": "진입 시드", "value": f"{position_value:.2f} USDT", "inline": True},
+            {"name": "진입가", "value": f"{entry_price:,.2f} USDT", "inline": True},
+            {"name": "손절가", "value": f"{stop_loss:,.2f} USDT", "inline": True},
+            {"name": "익절가", "value": f"{take_profit:,.2f} USDT", "inline": True}
+        ]
+        
         embed = {
             "title": f"{direction_emoji} 포지션 진입",
             "color": color,
             "timestamp": datetime.utcnow().isoformat(),
-            "fields": [
-                {"name": "방향", "value": side.upper(), "inline": True},
-                {"name": "심볼", "value": symbol, "inline": True},
-                {"name": "사이즈", "value": f"{size} {coin_name}", "inline": True},
-                {"name": "진입가", "value": f"{entry_price:,.2f} USDT", "inline": True},
-                {"name": "손절가", "value": f"{stop_loss:,.2f} USDT", "inline": True},
-                {"name": "익절가", "value": f"{take_profit:,.2f} USDT", "inline": True}
-            ],
+            "fields": fields,
             "footer": {"text": "Gate.io 스켈핑 봇"}
         }
         
@@ -87,7 +94,8 @@ class DiscordNotifier:
     
     def send_position_closed(self, side: str, symbol: str, entry_price: float, 
                            exit_price: float, size: float, pnl: float, 
-                           pnl_pct: float, exit_reason: str) -> bool:
+                           pnl_pct: float, exit_reason: str, 
+                           allocated_amount: float = None) -> bool:
         """포지션 청산 알림"""
         is_profit = pnl > 0
         if not ((is_profit and settings.notifications.notify_on_profit) or 
@@ -100,20 +108,26 @@ class DiscordNotifier:
         # 심볼에서 코인명 추출 (예: BTC_USDT -> BTC, LINK_USDT -> LINK)
         coin_name = symbol.split('_')[0]
         
+        # 진입 시드 계산 (사이즈 * 진입가)
+        position_value = size * entry_price
+        
+        # 기본 필드들
+        fields = [
+            {"name": "방향", "value": side.upper(), "inline": True},
+            {"name": "심볼", "value": symbol, "inline": True},
+            {"name": "진입 시드", "value": f"{position_value:.2f} USDT", "inline": True},
+            {"name": "진입가", "value": f"{entry_price:,.2f} USDT", "inline": True},
+            {"name": "청산가", "value": f"{exit_price:,.2f} USDT", "inline": True},
+            {"name": "청산사유", "value": exit_reason, "inline": True},
+            {"name": "손익", "value": f"{pnl:+,.2f} USDT", "inline": True},
+            {"name": "수익률", "value": f"{pnl_pct:+.2f}%", "inline": True}
+        ]
+        
         embed = {
             "title": f"{result_emoji} 포지션 청산",
             "color": color,
             "timestamp": datetime.utcnow().isoformat(),
-            "fields": [
-                {"name": "방향", "value": side.upper(), "inline": True},
-                {"name": "심볼", "value": symbol, "inline": True},
-                {"name": "사이즈", "value": f"{size} {coin_name}", "inline": True},
-                {"name": "진입가", "value": f"{entry_price:,.2f} USDT", "inline": True},
-                {"name": "청산가", "value": f"{exit_price:,.2f} USDT", "inline": True},
-                {"name": "청산사유", "value": exit_reason, "inline": True},
-                {"name": "손익", "value": f"{pnl:+,.2f} USDT", "inline": True},
-                {"name": "수익률", "value": f"{pnl_pct:+.2f}%", "inline": True}
-            ],
+            "fields": fields,
             "footer": {"text": "Gate.io 스켈핑 봇"}
         }
         
@@ -217,6 +231,27 @@ class DiscordNotifier:
             "fields": [
                 {"name": "상태", "value": status.upper(), "inline": True},
                 {"name": "메시지", "value": message, "inline": False}
+            ],
+            "footer": {"text": "Gate.io 스켈핑 봇"}
+        }
+        
+        return self._send_embed(embed)
+    
+    def send_multi_symbol_bot_started(self, symbols_count: int, balance: float, 
+                                    allocated_amount: float, allocation_pct: float, 
+                                    leverage: int) -> bool:
+        """다중 심볼 봇 시작 알림"""
+        embed = {
+            "title": "🚀 다중심볼 봇 시작",
+            "color": settings.notifications.color_info,
+            "timestamp": datetime.utcnow().isoformat(),
+            "fields": [
+                {"name": "거래대상", "value": f"{symbols_count}개 심볼", "inline": True},
+                {"name": "레버리지", "value": f"{leverage}x", "inline": True},
+                {"name": "총잔고", "value": f"{balance:.2f} USDT", "inline": True},
+                {"name": "사용자금", "value": f"{allocated_amount:.2f} USDT", "inline": True},
+                {"name": "자금비율", "value": f"{allocation_pct:.0%}", "inline": True},
+                {"name": "상태", "value": "가동중", "inline": True}
             ],
             "footer": {"text": "Gate.io 스켈핑 봇"}
         }

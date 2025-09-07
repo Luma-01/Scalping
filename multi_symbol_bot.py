@@ -128,18 +128,35 @@ class MultiSymbolTradingBot:
                     settings.trading.symbols_count
                 )
                 
-                # 각 심볼별 레버리지 및 마진 모드 설정
-                log_info("LEVERAGE", f"레버리지 {settings.trading.leverage}배 설정 중...", "⚙️")
+                # 각 심볼별 레버리지 및 마진 모드 설정 (통합 로그)
+                log_info("LEVERAGE", f"레버리지 {settings.trading.leverage}배 & Isolated 모드 설정 중...", "⚙️")
+                
+                failed_symbols = []
+                max_leverage_symbols = []
+                
                 for symbol in self.trading_symbols:
                     # 레버리지 설정
-                    result = self.connector.set_leverage(symbol, settings.trading.leverage)
-                    if not result:
-                        log_info("WARNING", f"{symbol} 레버리지 설정 실패 (기존값 유지)", "⚠️")
+                    leverage_result = self.connector.set_leverage(symbol, settings.trading.leverage)
                     
-                    # Isolated 모드 설정
-                    margin_result = self.connector.set_position_mode_isolated(symbol)
-                    if not margin_result:
-                        log_info("WARNING", f"{symbol} Isolated 모드 설정 실패 (기존값 유지)", "⚠️")
+                    # Isolated 모드 설정 (항상 성공하므로 별도 체크 불필요)
+                    self.connector.set_position_mode_isolated(symbol)
+                    
+                    # 결과 분류
+                    if leverage_result == "failed":
+                        failed_symbols.append(symbol)
+                    elif leverage_result == "max_leverage":
+                        max_leverage_symbols.append(symbol)
+                
+                # 통합 결과 출력
+                success_count = len(self.trading_symbols) - len(failed_symbols)
+                log_info("LEVERAGE", f"✅ {success_count}개 심볼 설정 완료: {settings.trading.leverage}배 레버리지 + Isolated 모드", "⚙️")
+                
+                # 특이사항 별도 알림
+                if failed_symbols:
+                    log_info("WARNING", f"⚠️ 레버리지 설정 실패 (기존값 유지): {', '.join(failed_symbols)}", "⚠️")
+                
+                if max_leverage_symbols:
+                    log_info("WARNING", f"🔧 최대 레버리지로 자동 설정: {', '.join(max_leverage_symbols)}", "🔧")
             
             log_success(f"거래 대상 설정 완료: {len(self.trading_symbols)}개 심볼")
             
@@ -147,10 +164,13 @@ class MultiSymbolTradingBot:
             self.strategy = FinalHighFrequencyStrategy()
             
             # Discord 알림
-            total_allocation = self.balance * 0.10
-            discord_notifier.send_bot_status(
-                "started", 
-                f"다중심볼 거래봇 시작\\n거래대상: {len(self.trading_symbols)}개\\n총잔고: {self.balance:.2f} USDT\\n사용자금: {total_allocation:.2f} USDT (10%)"
+            total_allocation = self.balance * settings.trading.position_size_pct
+            discord_notifier.send_multi_symbol_bot_started(
+                symbols_count=len(self.trading_symbols),
+                balance=self.balance,
+                allocated_amount=total_allocation,
+                allocation_pct=settings.trading.position_size_pct,
+                leverage=settings.trading.leverage
             )
             
             return True
@@ -742,7 +762,7 @@ def main():
     
     # 설정 출력 - SMC 스타일
     log_info("CONFIG", f"거래 대상: 거래량 상위 {settings.trading.symbols_count}개", "🎯")
-    log_info("CONFIG", f"레버리지: {settings.trading.leverage}배 | 자금: 총 시드 10%", "⚙️")
+    log_info("CONFIG", f"레버리지: {settings.trading.leverage}배 | 자금: 총 시드 {settings.trading.position_size_pct:.0%}", "⚙️")
     log_info("CONFIG", f"체크 주기: 5초 (고빈도) | HTF: 15m / LTF: 1m", "🕰️")
     log_info("CONFIG", f"테스트넷: {'예' if settings.api.testnet else '아니오'}", "🎮" if settings.api.testnet else "🔴")
     print("=" * 60)
