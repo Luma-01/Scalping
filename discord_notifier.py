@@ -70,8 +70,12 @@ class DiscordNotifier:
         coin_name = symbol.split('_')[0]
         
         # 실제 진입 시드 계산 (레버리지 고려한 증거금)
-        from settings import settings
-        position_value = (size * entry_price) / settings.trading.leverage
+        try:
+            from settings import settings
+            leverage = settings.trading.leverage
+        except:
+            leverage = 20  # 기본값
+        position_value = (size * entry_price) / leverage
         
         # 기본 필드들
         fields = [
@@ -110,8 +114,12 @@ class DiscordNotifier:
         coin_name = symbol.split('_')[0]
         
         # 실제 진입 시드 계산 (레버리지 고려한 증거금)
-        from settings import settings
-        position_value = (size * entry_price) / settings.trading.leverage
+        try:
+            from settings import settings
+            leverage = settings.trading.leverage
+        except:
+            leverage = 20  # 기본값
+        position_value = (size * entry_price) / leverage
         
         # 기본 필드들
         fields = [
