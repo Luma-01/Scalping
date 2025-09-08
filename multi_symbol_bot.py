@@ -539,7 +539,8 @@ class MultiSymbolTradingBot:
                 # Discord 알림
                 discord_notifier.send_position_opened(
                     side, symbol, price, size, 
-                    position.stop_loss, position.take_profit
+                    position.stop_loss, position.take_profit,
+                    contract_size=contract_size
                 )
                 
         except Exception as e:
@@ -595,7 +596,8 @@ class MultiSymbolTradingBot:
                 # Discord 알림
                 discord_notifier.send_position_closed(
                     position.side, symbol, position.entry_price, 
-                    price, position.size, pnl, pnl_pct, reason
+                    price, position.size, pnl, pnl_pct, reason,
+                    contract_size=self.get_contract_size(symbol)
                 )
                 
                 # 포지션 제거
