@@ -58,7 +58,7 @@ class DiscordNotifier:
     
     def send_position_opened(self, side: str, symbol: str, entry_price: float, 
                            size: float, stop_loss: float, take_profit: float, 
-                           allocated_amount: float = None) -> bool:
+                           allocated_amount: float = None, contract_size: float = None) -> bool:
         """포지션 진입 알림"""
         if not settings.notifications.notify_on_trade:
             return False
@@ -70,7 +70,13 @@ class DiscordNotifier:
         coin_name = symbol.split('_')[0]
         
         # 실제 필요 마진 계산 (레버리지 고려)
-        position_value = (size * entry_price) / settings.trading.leverage
+        # contract_size 파라미터로 받기
+        if contract_size:
+            actual_crypto_amount = size * contract_size
+            position_value = (size * contract_size * entry_price) / settings.trading.leverage
+        else:
+            # contract_size가 없으면 기존 방식
+            position_value = size * entry_price
         
         # 기본 필드들
         fields = [
@@ -95,7 +101,7 @@ class DiscordNotifier:
     def send_position_closed(self, side: str, symbol: str, entry_price: float, 
                            exit_price: float, size: float, pnl: float, 
                            pnl_pct: float, exit_reason: str, 
-                           allocated_amount: float = None) -> bool:
+                           allocated_amount: float = None, contract_size: float = None) -> bool:
         """포지션 청산 알림"""
         is_profit = pnl > 0
         if not ((is_profit and settings.notifications.notify_on_profit) or 
@@ -109,7 +115,13 @@ class DiscordNotifier:
         coin_name = symbol.split('_')[0]
         
         # 실제 필요 마진 계산 (레버리지 고려)
-        position_value = (size * entry_price) / settings.trading.leverage
+        # contract_size 파라미터로 받기
+        if contract_size:
+            actual_crypto_amount = size * contract_size
+            position_value = (size * contract_size * entry_price) / settings.trading.leverage
+        else:
+            # contract_size가 없으면 기존 방식
+            position_value = size * entry_price
         
         # 기본 필드들
         fields = [
