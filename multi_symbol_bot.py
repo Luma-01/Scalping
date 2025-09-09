@@ -296,7 +296,7 @@ class MultiSymbolTradingBot:
                     log_info("ANALYSIS", f"{symbol}: {signal.signal_type} 신호 (신뢰도: {signal.confidence:.2f}, 트렌드: {htf_trend})", "🔍")
                 
                 if (signal.signal_type in ['BUY', 'SELL'] and 
-                    signal.confidence >= 0.3 and
+                    signal.confidence >= settings.trading.confidence_threshold and
                     self.is_signal_aligned_with_trend(signal.signal_type, htf_trend, signal.confidence)):
                     
                     # 진입 조건에 대한 상세 로그 추가
