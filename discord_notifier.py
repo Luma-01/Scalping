@@ -170,6 +170,40 @@ class DiscordNotifier:
         
         return self._send_embed(embed)
     
+    def send_partial_close_notification(self, side: str, symbol: str, entry_price: float, 
+                                      current_price: float, close_size: float, 
+                                      partial_pnl: float, contract_size: float = None) -> bool:
+        """반익절 알림"""
+        if not settings.notifications.notify_on_profit:
+            return False
+        
+        # 심볼에서 코인명 추출
+        coin_name = symbol.split('_')[0]
+        
+        # 실제 청산량 계산
+        if contract_size:
+            actual_close_amount = close_size * contract_size
+        else:
+            actual_close_amount = close_size
+        
+        embed = {
+            "title": "💰 반익절 완료",
+            "color": settings.notifications.color_profit,
+            "timestamp": datetime.utcnow().isoformat(),
+            "fields": [
+                {"name": "방향", "value": side.upper(), "inline": True},
+                {"name": "심볼", "value": symbol, "inline": True},
+                {"name": "청산량", "value": f"{actual_close_amount} {coin_name}", "inline": True},
+                {"name": "진입가", "value": f"{entry_price:.6f} USDT", "inline": True},
+                {"name": "청산가", "value": f"{current_price:.6f} USDT", "inline": True},
+                {"name": "수익", "value": f"+{partial_pnl:.2f} USDT", "inline": True},
+                {"name": "상태", "value": "🛡️ 나머지 50% 본전 손절로 전환", "inline": False}
+            ],
+            "footer": {"text": "Gate.io 스켈핑 봇 - 트레일링 익절 시작"}
+        }
+        
+        return self._send_embed(embed)
+    
     def send_backtest_result(self, result_summary: Dict[str, Any]) -> bool:
         """백테스트 결과 알림"""
         color = settings.notifications.color_profit if result_summary['net_pnl'] > 0 else settings.notifications.color_loss

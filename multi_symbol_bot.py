@@ -280,7 +280,17 @@ class MultiSymbolTradingBot:
                 # 청산 조건 체크
                 exit_reason = self.check_exit_conditions(position, current_price)
                 if exit_reason:
-                    self.close_position(symbol, exit_reason, current_price)
+                    if exit_reason == "반익절":
+                        # 반익절 실행
+                        if self.execute_partial_close(position, current_price):
+                            # 반익절 성공하면 포지션 유지하고 계속 모니터링
+                            pass
+                        else:
+                            # 반익절 실패하면 전량 청산
+                            self.close_position(symbol, "반익절실패", current_price)
+                    else:
+                        # 일반 청산 (손절, 익절, 트레일링익절 등)
+                        self.close_position(symbol, exit_reason, current_price)
             else:
                 # HTF 트렌드 확인 후 신호 생성
                 htf_trend = self.get_htf_trend(data['htf'])
@@ -520,7 +530,7 @@ class MultiSymbolTradingBot:
                     take_profit = price * (1.003 if side == 'long' else 0.997)
                     log_info("ATR", f"{symbol} 시장 데이터 없음 - 고정 0.3% 사용", "⚠️")
 
-                # 포지션 기록
+                # 포지션 기록 (트레일링 익절 필드 초기화)
                 position = Position(
                     symbol=symbol,
                     side=side,
@@ -528,7 +538,9 @@ class MultiSymbolTradingBot:
                     entry_price=price,
                     entry_time=datetime.now(),
                     stop_loss=stop_loss,
-                    take_profit=take_profit
+                    take_profit=take_profit,
+                    original_size=size,  # 원래 크기 저장
+                    original_stop_loss=stop_loss  # 원래 손절가 저장
                 )
                 
                 self.positions[symbol] = position
@@ -607,24 +619,236 @@ class MultiSymbolTradingBot:
             log_error(f"{symbol} 포지션 청산 실패: {e}")
     
     def check_exit_conditions(self, position: Position, current_price: float) -> Optional[str]:
-        """청산 조건 확인"""
-        # 시간 기반 청산 제거 (타임아웃 없음)
-        # if datetime.now() - position.entry_time > timedelta(minutes=10):
-        #     return "시간만료"
+        """개선된 청산 조건 확인 (트레일링 익절 + 동적 손절)"""
         
-        # 손절/익절
+        # 1. 손절 체크 (동적 전환)
+        effective_stop_loss = self.get_effective_stop_loss(position, current_price)
+        
         if position.side == 'long':
-            if current_price >= position.take_profit:
-                return "익절"
-            elif current_price <= position.stop_loss:
+            if current_price <= effective_stop_loss:
+                if position.breakeven_set and abs(effective_stop_loss - position.entry_price) < 0.01:
+                    return "본전손절"
                 return "손절"
         else:
-            if current_price <= position.take_profit:
-                return "익절"
-            elif current_price >= position.stop_loss:
+            if current_price >= effective_stop_loss:
+                if position.breakeven_set and abs(effective_stop_loss - position.entry_price) < 0.01:
+                    return "본전손절"
                 return "손절"
         
+        # 2. 반익절 체크 (아직 안 했을 때만)
+        if not position.partial_closed:
+            if position.side == 'long':
+                if current_price >= position.take_profit:
+                    return "반익절"
+            else:
+                if current_price <= position.take_profit:
+                    return "반익절"
+        
+        # 3. 트레일링 체크 (반익절 후)
+        if position.partial_closed:
+            trailing_result = self.check_trailing_conditions(position, current_price)
+            if trailing_result:
+                return trailing_result
+        
         return None
+    
+    def get_effective_stop_loss(self, position: Position, current_price: float) -> float:
+        """현재 상황에 맞는 손절가 반환"""
+        
+        if not position.partial_closed:
+            # 반익절 전: 기존 ATR 손절
+            return position.stop_loss
+        
+        if not position.breakeven_set:
+            # 예외 상황: 반익절했는데 본전설정 안됨
+            return position.stop_loss
+        
+        # 반익절 후: 본전 vs ATR 손절 비교
+        breakeven_stop = position.entry_price
+        atr_stop = self.calculate_atr_stop_loss(position, current_price)
+        
+        if position.side == 'long':
+            # 롱: ATR 손절이 본전보다 위에 있으면 ATR 사용
+            if atr_stop > breakeven_stop:
+                if not hasattr(position, '_atr_stop_switched') or not position._atr_stop_switched:
+                    log_info("SWITCH", f"{position.symbol} 손절 전환: 본전({breakeven_stop:.6f}) → ATR({atr_stop:.6f})", "🔄")
+                    position._atr_stop_switched = True
+                return atr_stop
+            return breakeven_stop
+        else:
+            # 숏: ATR 손절이 본전보다 아래 있으면 ATR 사용
+            if atr_stop < breakeven_stop:
+                if not hasattr(position, '_atr_stop_switched') or not position._atr_stop_switched:
+                    log_info("SWITCH", f"{position.symbol} 손절 전환: 본전({breakeven_stop:.6f}) → ATR({atr_stop:.6f})", "🔄")
+                    position._atr_stop_switched = True
+                return atr_stop
+            return breakeven_stop
+    
+    def calculate_atr_stop_loss(self, position: Position, current_price: float) -> float:
+        """현재가 기준으로 ATR 손절가 계산"""
+        try:
+            market_data = self.market_data.get(position.symbol)
+            if market_data and 'ltf' in market_data and not market_data['ltf'].empty:
+                df = market_data['ltf']
+                if len(df) >= settings.trading.atr_period:
+                    from final_high_frequency_strategy import TechnicalIndicators
+                    atr = TechnicalIndicators.atr(
+                        df['high'], df['low'], df['close'], 
+                        settings.trading.atr_period
+                    ).iloc[-1]
+                    
+                    if position.side == 'long':
+                        return current_price - (atr * settings.trading.stop_loss_atr_mult)
+                    else:
+                        return current_price + (atr * settings.trading.stop_loss_atr_mult)
+        except Exception:
+            pass
+        
+        # ATR 계산 실패시 기본값
+        if position.side == 'long':
+            return current_price * 0.997
+        else:
+            return current_price * 1.003
+    
+    def execute_partial_close(self, position: Position, current_price: float):
+        """반익절 실행 + 본전 손절 설정"""
+        try:
+            # 50% 청산 주문
+            close_size = position.original_size // 2
+            if close_size <= 0:
+                close_size = 1  # 최소 1계약은 청산
+            
+            close_side = 'short' if position.side == 'long' else 'long'
+            order = self.connector.create_futures_order(
+                symbol=position.symbol,
+                side=close_side,
+                size=close_size,
+                order_type='market'
+            )
+            
+            if order and order.get('order_id'):
+                # 포지션 크기 업데이트
+                position.size = position.original_size - close_size
+                position.partial_closed = True
+                
+                # 손절을 본전(진입가)으로 변경
+                position.stop_loss = position.entry_price
+                position.breakeven_set = True
+                
+                # 트레일링 초기화
+                position.trailing_price = current_price
+                position._atr_stop_switched = False
+                
+                # 반익절 수익 계산
+                actual_size = self.get_actual_size(position.symbol, close_size)
+                if position.side == 'long':
+                    partial_pnl = (current_price - position.entry_price) * actual_size
+                else:
+                    partial_pnl = (position.entry_price - current_price) * actual_size
+                
+                log_info("PARTIAL", f"{position.symbol} 반익절 완료: {close_size}계약 → +{partial_pnl:.2f} USDT", "💰")
+                log_info("BREAKEVEN", f"{position.symbol} 손절을 본전({position.entry_price:.6f})으로 변경", "🛡️")
+                
+                # Discord 알림
+                discord_notifier.send_partial_close_notification(
+                    position.side, position.symbol, position.entry_price, 
+                    current_price, close_size, partial_pnl,
+                    contract_size=self.get_contract_size(position.symbol)
+                )
+                
+                return True
+        except Exception as e:
+            log_error(f"{position.symbol} 반익절 실패: {e}")
+            return False
+    
+    def check_trailing_conditions(self, position: Position, current_price: float) -> Optional[str]:
+        """트레일링 익절 조건 체크"""
+        try:
+            # 트레일링 기준가 업데이트 (새 고점/저점)
+            if position.side == 'long':
+                if position.trailing_price is None or current_price > position.trailing_price:
+                    position.trailing_price = current_price
+                    # ATR 기반 트레일링 스톱 설정
+                    atr = self.get_current_atr(position.symbol)
+                    if atr:
+                        position.trailing_stop = current_price - (atr * 2.0)  # ATR의 2배
+                        log_info("TRAIL", f"{position.symbol} 트레일링 업데이트: 기준가 {current_price:.6f}, 스톱 {position.trailing_stop:.6f}", "🎯")
+                
+                # 트레일링 스톱 도달
+                if position.trailing_stop and current_price <= position.trailing_stop:
+                    return "트레일링익절"
+            else:
+                # 숏 포지션
+                if position.trailing_price is None or current_price < position.trailing_price:
+                    position.trailing_price = current_price
+                    atr = self.get_current_atr(position.symbol)
+                    if atr:
+                        position.trailing_stop = current_price + (atr * 2.0)
+                        log_info("TRAIL", f"{position.symbol} 트레일링 업데이트: 기준가 {current_price:.6f}, 스톱 {position.trailing_stop:.6f}", "🎯")
+                
+                if position.trailing_stop and current_price >= position.trailing_stop:
+                    return "트레일링익절"
+            
+            # 반전 신호 감지
+            if self.detect_reversal_signal(position.symbol):
+                return "반전익절"
+                
+        except Exception as e:
+            log_error(f"{position.symbol} 트레일링 체크 오류: {e}")
+        
+        return None
+    
+    def get_current_atr(self, symbol: str) -> Optional[float]:
+        """현재 ATR 값 조회"""
+        try:
+            market_data = self.market_data.get(symbol)
+            if market_data and 'ltf' in market_data and not market_data['ltf'].empty:
+                df = market_data['ltf']
+                if len(df) >= settings.trading.atr_period:
+                    from final_high_frequency_strategy import TechnicalIndicators
+                    atr = TechnicalIndicators.atr(
+                        df['high'], df['low'], df['close'], 
+                        settings.trading.atr_period
+                    ).iloc[-1]
+                    return atr
+        except Exception:
+            pass
+        return None
+    
+    def detect_reversal_signal(self, symbol: str) -> bool:
+        """반전 신호 감지"""
+        try:
+            market_data = self.market_data.get(symbol)
+            if not market_data or 'ltf' not in market_data or market_data['ltf'].empty:
+                return False
+            
+            df = market_data['ltf']
+            if len(df) < 20:
+                return False
+            
+            # RSI 다이버전스나 강한 반전 신호 체크
+            from final_high_frequency_strategy import TechnicalIndicators
+            rsi = TechnicalIndicators.rsi(df['close'], 14)
+            
+            # RSI 과매수/과매도 + 가격 반전 패턴
+            current_rsi = rsi.iloc[-1]
+            prev_rsi = rsi.iloc[-2]
+            
+            current_price = df['close'].iloc[-1]
+            prev_price = df['close'].iloc[-2]
+            
+            # 과매수에서 RSI 하락 + 가격 하락 = 매도 신호
+            if current_rsi > 70 and current_rsi < prev_rsi and current_price < prev_price:
+                return True
+            
+            # 과매도에서 RSI 상승 + 가격 상승 = 매수 신호
+            if current_rsi < 30 and current_rsi > prev_rsi and current_price > prev_price:
+                return True
+            
+        except Exception:
+            pass
+        
+        return False
     
     def update_trading_symbols(self):
         """거래량 상위 심볼 업데이트"""
