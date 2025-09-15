@@ -190,6 +190,7 @@ class DiscordNotifier:
         
         embed = {
             "title": "💰 반익절 완료",
+            "description": f"{symbol} / {side.upper()}",  # 심볼을 부제목으로 추가
             "color": settings.notifications.color_profit,
             "timestamp": datetime.utcnow().isoformat(),
             "fields": [
