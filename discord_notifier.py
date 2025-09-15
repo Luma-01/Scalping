@@ -90,7 +90,7 @@ class DiscordNotifier:
         
         embed = {
             "title": f"{direction_emoji} 포지션 진입",
-            "description": f"**{symbol}**",  # 심볼을 부제목으로 추가
+            "description": f"{symbol} / {side.upper()}",  # 심볼을 부제목으로 추가
             "color": color,
             "timestamp": datetime.utcnow().isoformat(),
             "fields": fields,
@@ -138,7 +138,7 @@ class DiscordNotifier:
         
         embed = {
             "title": f"{result_emoji} 포지션 청산",
-            "description": f"**{symbol}**",  # 심볼을 부제목으로 추가
+            "description": f"{symbol} / {side.upper()}",  # 심볼을 부제목으로 추가
             "color": color,
             "timestamp": datetime.utcnow().isoformat(),
             "fields": fields,
