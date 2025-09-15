@@ -56,8 +56,26 @@ class DiscordNotifier:
         
         return self._send_embed(embed)
     
-    def send_position_opened(self, side: str, symbol: str, entry_price: float, 
-                           size: float, stop_loss: float, take_profit: float, 
+    def _get_price_precision(self, symbol: str, price: float) -> str:
+        """심볼별 적절한 소숫점 자릿수로 가격 포맷팅"""
+        # 가격대별로 적절한 소숫점 자릿수 결정
+        if price >= 1000:
+            return f"{price:,.2f}"
+        elif price >= 100:
+            return f"{price:,.3f}"
+        elif price >= 10:
+            return f"{price:,.4f}"
+        elif price >= 1:
+            return f"{price:,.5f}"
+        else:
+            return f"{price:,.6f}"
+
+    def _calculate_percentage(self, entry_price: float, target_price: float) -> float:
+        """진입가 대비 목표가의 퍼센트 변화율 계산"""
+        return ((target_price - entry_price) / entry_price) * 100
+
+    def send_position_opened(self, side: str, symbol: str, entry_price: float,
+                           size: float, stop_loss: float, take_profit: float,
                            allocated_amount: float = None, contract_size: float = None) -> bool:
         """포지션 진입 알림"""
         if not settings.notifications.notify_on_trade:
@@ -78,14 +96,18 @@ class DiscordNotifier:
             # contract_size가 없으면 기존 방식
             position_value = size * entry_price
         
+        # 손절/익절 퍼센트 계산
+        stop_loss_pct = self._calculate_percentage(entry_price, stop_loss)
+        take_profit_pct = self._calculate_percentage(entry_price, take_profit)
+
         # 기본 필드들
         fields = [
             {"name": "방향", "value": side.upper(), "inline": True},
             {"name": "심볼", "value": symbol, "inline": True},
             {"name": "진입 시드", "value": f"{position_value:.2f} USDT", "inline": True},
-            {"name": "진입가", "value": f"{entry_price:,.2f} USDT", "inline": True},
-            {"name": "손절가", "value": f"{stop_loss:,.2f} USDT", "inline": True},
-            {"name": "익절가", "value": f"{take_profit:,.2f} USDT", "inline": True}
+            {"name": "진입가", "value": f"{self._get_price_precision(symbol, entry_price)} USDT", "inline": True},
+            {"name": "손절가", "value": f"{self._get_price_precision(symbol, stop_loss)} ({stop_loss_pct:+.2f}%) USDT", "inline": True},
+            {"name": "익절가", "value": f"{self._get_price_precision(symbol, take_profit)} ({take_profit_pct:+.2f}%) USDT", "inline": True}
         ]
         
         embed = {
@@ -99,18 +121,21 @@ class DiscordNotifier:
         
         return self._send_embed(embed)
     
-    def send_position_closed(self, side: str, symbol: str, entry_price: float, 
-                           exit_price: float, size: float, pnl: float, 
-                           pnl_pct: float, exit_reason: str, 
-                           allocated_amount: float = None, contract_size: float = None) -> bool:
+    def send_position_closed(self, side: str, symbol: str, entry_price: float,
+                           exit_price: float, size: float, pnl: float,
+                           pnl_pct: float, exit_reason: str,
+                           allocated_amount: float = None, contract_size: float = None,
+                           partial_pnl: float = 0) -> bool:
         """포지션 청산 알림"""
         is_profit = pnl > 0
         if not ((is_profit and settings.notifications.notify_on_profit) or 
                 (not is_profit and settings.notifications.notify_on_loss)):
             return False
         
-        color = settings.notifications.color_profit if is_profit else settings.notifications.color_loss
-        result_emoji = "✅" if is_profit else "❌"
+        # 전체 수익 기준으로 색상과 이모지 결정
+        final_is_profit = total_pnl > 0 if partial_pnl > 0 else is_profit
+        color = settings.notifications.color_profit if final_is_profit else settings.notifications.color_loss
+        result_emoji = "✅" if final_is_profit else "❌"
         
         # 심볼에서 코인명 추출 (예: BTC_USDT -> BTC, LINK_USDT -> LINK)
         coin_name = symbol.split('_')[0]
@@ -124,17 +149,31 @@ class DiscordNotifier:
             # contract_size가 없으면 기존 방식
             position_value = size * entry_price
         
+        # 전체 수익 계산 (반익절 수익 포함)
+        total_pnl = partial_pnl + pnl
+
         # 기본 필드들
         fields = [
             {"name": "방향", "value": side.upper(), "inline": True},
             {"name": "심볼", "value": symbol, "inline": True},
             {"name": "진입 시드", "value": f"{position_value:.2f} USDT", "inline": True},
-            {"name": "진입가", "value": f"{entry_price:,.2f} USDT", "inline": True},
-            {"name": "청산가", "value": f"{exit_price:,.2f} USDT", "inline": True},
-            {"name": "청산사유", "value": exit_reason, "inline": True},
-            {"name": "손익", "value": f"{pnl:+,.2f} USDT", "inline": True},
-            {"name": "수익률", "value": f"{pnl_pct:+.2f}%", "inline": True}
+            {"name": "진입가", "value": f"{self._get_price_precision(symbol, entry_price)} USDT", "inline": True},
+            {"name": "청산가", "value": f"{self._get_price_precision(symbol, exit_price)} USDT", "inline": True},
+            {"name": "청산사유", "value": exit_reason, "inline": True}
         ]
+
+        # 반익절이 있었던 경우와 없었던 경우 구분
+        if partial_pnl > 0:
+            fields.extend([
+                {"name": "반익절 수익", "value": f"+{partial_pnl:.2f} USDT", "inline": True},
+                {"name": "최종 수익", "value": f"{pnl:+,.2f} USDT", "inline": True},
+                {"name": "전체 수익", "value": f"{total_pnl:+,.2f} USDT", "inline": True}
+            ])
+        else:
+            fields.extend([
+                {"name": "손익", "value": f"{pnl:+,.2f} USDT", "inline": True},
+                {"name": "수익률", "value": f"{pnl_pct:+.2f}%", "inline": True}
+            ])
         
         embed = {
             "title": f"{result_emoji} 포지션 청산",
@@ -197,8 +236,8 @@ class DiscordNotifier:
                 {"name": "방향", "value": side.upper(), "inline": True},
                 {"name": "심볼", "value": symbol, "inline": True},
                 {"name": "청산량", "value": f"{actual_close_amount} {coin_name}", "inline": True},
-                {"name": "진입가", "value": f"{entry_price:.6f} USDT", "inline": True},
-                {"name": "청산가", "value": f"{current_price:.6f} USDT", "inline": True},
+                {"name": "진입가", "value": f"{self._get_price_precision(symbol, entry_price)} USDT", "inline": True},
+                {"name": "청산가", "value": f"{self._get_price_precision(symbol, current_price)} USDT", "inline": True},
                 {"name": "수익", "value": f"+{partial_pnl:.2f} USDT", "inline": True},
                 {"name": "상태", "value": "🛡️ 나머지 50% 본전 손절로 전환", "inline": False}
             ],
