@@ -422,7 +422,11 @@ class MultiSymbolTradingBot:
         try:
             positions = self.connector.get_futures_positions()
             for pos in positions:
-                if pos['contract'] == symbol and float(pos['size']) > 0:
+                # Gate.io API 응답 구조에 맞게 수정
+                pos_symbol = pos.get('contract') or pos.get('symbol') or pos.get('instrument_name')
+                pos_size = float(pos.get('size', 0))
+            
+                if pos_symbol == symbol and pos_size > 0:
                     log_info("EXISTS", f"{symbol} 거래소에 포지션 존재 감지", "⚠️")
                     return True
             return False
@@ -435,25 +439,36 @@ class MultiSymbolTradingBot:
         try:
             exchange_positions = self.connector.get_futures_positions()
             synced_count = 0
-            
+        
             # 거래소에는 없는데 프로그램에 있는 포지션 제거
             for symbol in list(self.positions.keys()):
                 found = False
                 for pos in exchange_positions:
-                    if pos['contract'] == symbol and float(pos['size']) > 0:
+                    # Gate.io API 응답 구조에 맞게 수정
+                    pos_symbol = pos.get('contract') or pos.get('symbol') or pos.get('instrument_name')
+                    pos_size = float(pos.get('size', 0))
+                
+                    if pos_symbol == symbol and pos_size > 0:
                         found = True
                         break
-                
+            
                 if not found:
                     log_info("SYNC", f"{symbol} 포지션이 거래소에서 청산됨 - 프로그램 기록 제거", "🔄")
                     del self.positions[symbol]
                     synced_count += 1
-            
+        
             if synced_count > 0:
                 log_info("SYNC", f"{synced_count}개 포지션 동기화 완료", "✅")
-                
+            
         except Exception as e:
             log_error(f"포지션 동기화 실패: {e}")
+            # 디버깅을 위해 실제 응답 구조 출력
+            try:
+                positions = self.connector.get_futures_positions()
+                if positions:
+                    log_info("DEBUG", f"포지션 응답 구조: {positions[0].keys() if positions else 'Empty'}", "🔍")
+            except:
+                pass
     
     def save_contract_sizes(self):
         """Contract Size 파일에 저장"""
