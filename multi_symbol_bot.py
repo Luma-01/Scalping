@@ -80,6 +80,8 @@ class MultiSymbolTradingBot:
         # 성과 추적
         self.trades_today = []
         self.daily_start_balance = 0.0
+        self.winning_trades_today = 0
+        self.last_daily_summary = datetime.now().date()
         
         # 동적 심볼 리스트 관리 (매시 정각 업데이트)
         self.last_symbol_update_hour = -1  # 마지막 업데이트한 시간
@@ -304,6 +306,16 @@ class MultiSymbolTradingBot:
                 if signal.signal_type != 'HOLD':
                     self.signal_count += 1
                     log_info("ANALYSIS", f"{symbol}: {signal.signal_type} 신호 (신뢰도: {signal.confidence:.2f}, 트렌드: {htf_trend})", "🔍")
+
+                    # Discord 거래 신호 알림
+                    reason = f"HTF 트렌드: {htf_trend}, 분석: {signal.reason if hasattr(signal, 'reason') else '기술적 분석'}"
+                    discord_notifier.send_trade_signal(
+                        signal_type=signal.signal_type,
+                        symbol=symbol,
+                        price=current_price,
+                        reason=reason,
+                        confidence=signal.confidence
+                    )
                 
                 if (signal.signal_type in ['BUY', 'SELL'] and 
                     signal.confidence >= settings.trading.confidence_threshold and
@@ -666,12 +678,18 @@ class MultiSymbolTradingBot:
                 self.trades_today.append(trade)
                 
                 log_position(f"{reason.upper()}", symbol, pnl)
-                
+
+                # 승리 거래 카운트 업데이트
+                total_pnl = position.partial_pnl + pnl
+                if total_pnl > 0:
+                    self.winning_trades_today += 1
+
                 # Discord 알림
                 discord_notifier.send_position_closed(
-                    position.side, symbol, position.entry_price, 
+                    position.side, symbol, position.entry_price,
                     price, position.size, pnl, pnl_pct, reason,
-                    contract_size=self.get_contract_size(symbol)
+                    contract_size=self.get_contract_size(symbol),
+                    partial_pnl=position.partial_pnl
                 )
                 
                 # 포지션 제거
@@ -956,6 +974,9 @@ class MultiSymbolTradingBot:
         
         while self.running:
             try:
+                # 일일 요약 체크 (새로운 날이 시작되었는지 확인)
+                self.check_daily_summary()
+
                 # 매시 정각에 거래량 상위 심볼 업데이트
                 current_time = datetime.now()
                 current_hour = current_time.hour
@@ -1034,10 +1055,52 @@ class MultiSymbolTradingBot:
         log_success("다중 심볼 거래 봇 가동 시작")
         return True
     
+    def send_daily_summary(self):
+        """일일 거래 요약 전송"""
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            current_balance = self.balance
+            total_pnl = current_balance - self.daily_start_balance
+            win_rate = (self.winning_trades_today / self.daily_trades) if self.daily_trades > 0 else 0.0
+
+            discord_notifier.send_daily_summary(
+                date=today,
+                total_trades=self.daily_trades,
+                winning_trades=self.winning_trades_today,
+                total_pnl=total_pnl,
+                win_rate=win_rate,
+                balance=current_balance
+            )
+
+            log_info("SUMMARY", f"일일 요약 전송 완료: {self.daily_trades}거래, {self.winning_trades_today}승, {total_pnl:+.2f}USDT", "📊")
+
+        except Exception as e:
+            log_error(f"일일 요약 전송 실패: {e}")
+
+    def check_daily_summary(self):
+        """매일 자정에 일일 요약 전송"""
+        today = datetime.now().date()
+        if today != self.last_daily_summary:
+            # 새로운 날이 시작됨
+            if self.daily_trades > 0:  # 어제 거래가 있었다면 요약 전송
+                self.send_daily_summary()
+
+            # 일일 통계 초기화
+            self.daily_trades = 0
+            self.winning_trades_today = 0
+            self.daily_start_balance = self.balance
+            self.last_daily_summary = today
+
+            log_info("RESET", "새로운 거래일 시작 - 일일 통계 초기화", "🌅")
+
     def stop(self):
         """봇 중지"""
         self.running = False
-        
+
+        # 봇 종료 시 일일 요약 전송
+        if self.daily_trades > 0:
+            self.send_daily_summary()
+
         # 모든 포지션 청산
         for symbol in list(self.positions.keys()):
             try:
@@ -1045,7 +1108,7 @@ class MultiSymbolTradingBot:
                 self.close_position(symbol, "봇종료", current_price)
             except:
                 pass
-        
+
         log_info("STOP", "봇이 안전하게 중지되었습니다", "⭕")
 
 
