@@ -416,6 +416,44 @@ class MultiSymbolTradingBot:
         except Exception as e:
             log_info("LOAD", f"Contract Size 파일 로드 실패: {e}", "⚠️")
         return {}
+
+    def check_existing_positions(self, symbol: str) -> bool:
+        """실제 포지션이 있는지 확인"""
+        try:
+            positions = self.connector.get_futures_positions()
+            for pos in positions:
+                if pos['contract'] == symbol and float(pos['size']) > 0:
+                    log_info("EXISTS", f"{symbol} 거래소에 포지션 존재 감지", "⚠️")
+                    return True
+            return False
+        except Exception as e:
+            log_error(f"{symbol} 포지션 확인 실패: {e}")
+            return False
+
+    def sync_positions_with_exchange(self):
+        """거래소와 포지션 상태 동기화"""
+        try:
+            exchange_positions = self.connector.get_futures_positions()
+            synced_count = 0
+            
+            # 거래소에는 없는데 프로그램에 있는 포지션 제거
+            for symbol in list(self.positions.keys()):
+                found = False
+                for pos in exchange_positions:
+                    if pos['contract'] == symbol and float(pos['size']) > 0:
+                        found = True
+                        break
+                
+                if not found:
+                    log_info("SYNC", f"{symbol} 포지션이 거래소에서 청산됨 - 프로그램 기록 제거", "🔄")
+                    del self.positions[symbol]
+                    synced_count += 1
+            
+            if synced_count > 0:
+                log_info("SYNC", f"{synced_count}개 포지션 동기화 완료", "✅")
+                
+        except Exception as e:
+            log_error(f"포지션 동기화 실패: {e}")
     
     def save_contract_sizes(self):
         """Contract Size 파일에 저장"""
@@ -451,10 +489,19 @@ class MultiSymbolTradingBot:
     def open_position(self, symbol: str, signal: Signal, price: float):
         """포지션 진입"""
         try:
+            # 기존 포지션 확인 (프로그램 + 거래소)
+            if symbol in self.positions:
+                log_info("SKIP", f"{symbol} 이미 포지션 보유중 - 스킵", "⚠️")
+                return
+                
+            if self.check_existing_positions(symbol):
+                log_info("SKIP", f"{symbol} 거래소에 포지션 존재 - 스킵", "⚠️")
+                return
+
             # settings에서 포지션 크기 비율 가져오기
             safe_allocation = self.balance * settings.trading.position_size_pct
             log_info("ALLOCATION", f"{symbol} 시드 배분: {safe_allocation:.2f} USDT (총 시드의 {settings.trading.position_size_pct:.1%})", "💰")
-            
+
             # Contract Size를 고려한 크기 계산 (API에서 정확한 값 조회)
             contract_info = self.connector.get_contract_info(symbol)
             if contract_info and 'contract_size' in contract_info:
@@ -463,26 +510,26 @@ class MultiSymbolTradingBot:
                 self.contract_sizes[symbol] = contract_size
             else:
                 contract_size = self.get_contract_size(symbol)
-            
+
             # 필요한 마진 = (Contract Size × 가격) / 레버리지 (settings에서 가져옴)
             required_margin_per_contract = (contract_size * price) / settings.trading.leverage
             max_contracts = int(safe_allocation / required_margin_per_contract)
             size = max(1, max_contracts)
-            
+
             log_info("CALC", f"{symbol} 마진계산: {safe_allocation:.2f} USDT ÷ {required_margin_per_contract:.6f} = {max_contracts} 계약 ({settings.trading.leverage}배)", "🧮")
-            
+
             actual_amount = size * contract_size
             coin_name = symbol.split('_')[0]
-            
+
             # Contract Size 정보 표시
             log_info("CONTRACT", f"{symbol}: {size} 계약 = {actual_amount} {coin_name} (Contract Size: {contract_size})", "📋")
             log_info("ORDER", f"{symbol} 원하는 수량: {actual_amount} {coin_name}", "📊")
             log_info("ORDER", f"Contract Size: {contract_size}, SDK 주문: {size}계약", "📊")
             log_info("ORDER", f"실제 거래: {size}계약 = {actual_amount} {coin_name}", "✅")
-            
+
             if size <= 0:
                 return
-            
+
             # 주문 실행
             side = 'long' if signal.signal_type == 'BUY' else 'short'
             order = self.connector.create_futures_order(
@@ -491,13 +538,13 @@ class MultiSymbolTradingBot:
                 size=size,
                 order_type='market'
             )
-            
+
             if order and order.get('order_id'):
                 # Contract Size 학습 (주문 결과에서 실제 크기 확인)
                 order_actual_size = order.get('size', size)
                 if order_actual_size != size:
                     self.learn_contract_size(symbol, size, order_actual_size)
-                
+
                 # ATR 기반 동적 익절/손절 계산
                 market_data = self.market_data.get(symbol)
                 if market_data and 'ltf' in market_data and not market_data['ltf'].empty:
@@ -509,7 +556,7 @@ class MultiSymbolTradingBot:
                             df['high'], df['low'], df['close'], 
                             settings.trading.atr_period
                         ).iloc[-1]
-                        
+
                         # ATR 기반 손절/익절 설정
                         if side == 'long':
                             stop_loss = price - (atr * settings.trading.stop_loss_atr_mult)
@@ -517,7 +564,7 @@ class MultiSymbolTradingBot:
                         else:
                             stop_loss = price + (atr * settings.trading.stop_loss_atr_mult)
                             take_profit = price - (atr * settings.trading.take_profit_atr_mult)
-                        
+
                         log_info("ATR", f"{symbol} ATR: {atr:.6f}, 손절: {stop_loss:.6f}, 익절: {take_profit:.6f}", "📊")
                     else:
                         # 데이터 부족시 기본값 사용
@@ -542,22 +589,22 @@ class MultiSymbolTradingBot:
                     original_size=size,  # 원래 크기 저장
                     original_stop_loss=stop_loss  # 원래 손절가 저장
                 )
-                
+
                 self.positions[symbol] = position
                 self.daily_trades += 1
-                
+
                 log_trade(side, symbol, price, size)
-                
+
                 # Discord 알림
                 discord_notifier.send_position_opened(
                     side, symbol, price, size, 
                     position.stop_loss, position.take_profit,
                     contract_size=contract_size
                 )
-                
+
         except Exception as e:
             log_error(f"{symbol} 포지션 진입 실패: {e}")
-    
+
     def close_position(self, symbol: str, reason: str, price: float):
         """포지션 청산"""
         try:
@@ -902,6 +949,11 @@ class MultiSymbolTradingBot:
                     current_time.minute == 0 and current_time.second < 10):  # 정각 10초 이내
                     self.update_trading_symbols()
                     self.last_symbol_update_hour = current_hour
+
+                # 5분마다 포지션 동기화 (추가된 부분)
+                if current_time.minute % 5 == 0 and current_time.second < 10:
+                    self.sync_positions_with_exchange()
+
                 
                 # 데이터 수집 상태 리셋
                 self.data_success_count = 0
@@ -949,6 +1001,8 @@ class MultiSymbolTradingBot:
             except Exception as e:
                 log_error(f"거래 루프 오류: {e}")
                 time.sleep(30)
+
+
     
     def start(self):
         """봇 시작"""
