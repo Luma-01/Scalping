@@ -608,14 +608,21 @@ class MultiSymbolTradingBot:
                 position = Position(
                     symbol=symbol,
                     side=side,
-                    size=size,  # SDK 크기 저장
+                    size=size,
                     entry_price=price,
                     entry_time=datetime.now(),
                     stop_loss=stop_loss,
                     take_profit=take_profit,
-                    original_size=size,  # 원래 크기 저장
-                    original_stop_loss=stop_loss  # 원래 손절가 저장
-                )
+                    status='open',
+                    original_size=size,
+                    partial_closed=False,
+                    partial_pnl=0.0,
+                    trailing_price=None,
+                    trailing_stop=None,
+                    breakeven_set=False,
+                    original_stop_loss=stop_loss,
+                    _atr_stop_switched=False
+                )  # 괄호 하나만
 
                 self.positions[symbol] = position
                 self.daily_trades += 1
@@ -633,36 +640,47 @@ class MultiSymbolTradingBot:
             log_error(f"{symbol} 포지션 진입 실패: {e}")
 
     def close_position(self, symbol: str, reason: str, price: float):
-        """포지션 청산"""
+        """포지션 청산 (오류 방지 강화)"""
         try:
             if symbol not in self.positions:
                 return
-                
+
             position = self.positions[symbol]
-            
-            # 청산 주문
+        
+            # 청산 주문 시도
             close_side = 'short' if position.side == 'long' else 'long'
-            order = self.connector.create_futures_order(
-                symbol=symbol,
-                side=close_side,
-                size=position.size,
-                order_type='market'
-            )
-            
-            if order and order.get('order_id'):
-                # Contract Size를 고려한 손익 계산
-                actual_size = self.get_actual_size(symbol, position.size)
-                
-                if position.side == 'long':
-                    pnl = (price - position.entry_price) * actual_size
-                else:
-                    pnl = (position.entry_price - price) * actual_size
-                
-                pnl_pct = (pnl / (position.entry_price * actual_size)) * 100 * settings.trading.leverage
-                
+        
+            try:
+                order = self.connector.create_futures_order(
+                    symbol=symbol,
+                    side=close_side,
+                    size=position.size,
+                    order_type='market'
+                )
+                order_success = order and order.get('order_id')
+            except Exception as e:
+                log_error(f"{symbol} 청산 주문 실패: {e}")
+                order_success = False
+
+            # 주문 성공 여부와 관계없이 손익 계산 및 포지션 제거
+            actual_size = self.get_actual_size(symbol, position.size)
+        
+            if position.side == 'long':
+                pnl = (price - position.entry_price) * actual_size
+            else:
+                pnl = (position.entry_price - price) * actual_size
+        
+            pnl_pct = (pnl / (position.entry_price * actual_size)) * 100 * settings.trading.leverage
+        
+            # 반익절 수익 안전하게 가져오기
+            partial_pnl = getattr(position, 'partial_pnl', 0.0)
+            total_pnl = partial_pnl + pnl
+        
+            if order_success:
+                # 정상 청산
                 self.daily_pnl += pnl
                 self.balance += pnl
-                
+            
                 # 거래 기록
                 trade = {
                     'timestamp': datetime.now(),
@@ -676,27 +694,37 @@ class MultiSymbolTradingBot:
                     'reason': reason
                 }
                 self.trades_today.append(trade)
-                
+            
                 log_position(f"{reason.upper()}", symbol, pnl)
-
-                # 승리 거래 카운트 업데이트
-                total_pnl = position.partial_pnl + pnl
+            
+                # 승리 거래 카운트
                 if total_pnl > 0:
                     self.winning_trades_today += 1
-
+            
                 # Discord 알림
-                discord_notifier.send_position_closed(
-                    position.side, symbol, position.entry_price,
-                    price, position.size, pnl, pnl_pct, reason,
-                    contract_size=self.get_contract_size(symbol),
-                    partial_pnl=position.partial_pnl
-                )
-                
-                # 포지션 제거
-                del self.positions[symbol]
-                
+                try:
+                    discord_notifier.send_position_closed(
+                        position.side, symbol, position.entry_price,
+                        price, position.size, pnl, pnl_pct, reason,
+                        contract_size=self.get_contract_size(symbol),
+                        partial_pnl=partial_pnl
+                    )
+                except:
+                    pass  # Discord 오류는 무시
+            else:
+                # 청산 실패시 로그만
+                log_error(f"{symbol} 청산 주문 실패 - 포지션 기록은 제거")
+        
+            # 포지션 제거 (무조건)
+            del self.positions[symbol]
+            log_info("CLEANUP", f"{symbol} 포지션 기록 제거 완료", "🧹")
+        
         except Exception as e:
-            log_error(f"{symbol} 포지션 청산 실패: {e}")
+            log_error(f"{symbol} 포지션 청산 처리 오류: {e}")
+            # 최종 안전장치: 오류시에도 포지션 제거
+            if symbol in self.positions:
+                del self.positions[symbol]
+                log_info("FORCE", f"{symbol} 강제 포지션 제거", "⚠️")
     
     def check_exit_conditions(self, position: Position, current_price: float) -> Optional[str]:
         """개선된 청산 조건 확인 (트레일링 익절 + 동적 손절)"""
