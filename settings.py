@@ -45,7 +45,7 @@ class TradingSettings:
     symbol_update_interval: int = 3600      # 1시간마다 심볼 리스트 업데이트
     
     # =================== 시간 관리 ===================
-    htf_timeframe: str = "15m"              # Higher Time Frame (트렌드 확인)
+    htf_timeframe: str = "5m"              # Higher Time Frame (트렌드 확인)
     ltf_timeframe: str = "1m"               # Lower Time Frame (진입/청산)
     candle_limit: int = 1000                # 패턴 분석용 캔들 데이터 수
     
