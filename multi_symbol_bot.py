@@ -233,7 +233,9 @@ class MultiSymbolTradingBot:
             
             # LTF 데이터에서 HTF (15분) 리샘플링
             ltf_data_indexed = ltf_data.set_index('timestamp')
-            htf_data = ltf_data_indexed.resample('15T').agg({
+            # settings의 HTF 값을 pandas resample 형식으로 변환
+            htf_resample = settings.trading.htf_timeframe.replace('m', 'T')  # '15m' → '15T'
+            htf_data = ltf_data_indexed.resample(htf_resample).agg({
                 'open': 'first',
                 'high': 'max',
                 'low': 'min', 
@@ -1202,7 +1204,7 @@ def main():
     # 설정 출력 - SMC 스타일
     log_info("CONFIG", f"거래 대상: 거래량 상위 {settings.trading.symbols_count}개", "🎯")
     log_info("CONFIG", f"레버리지: {settings.trading.leverage}배 | 자금: 총 시드 {settings.trading.position_size_pct:.0%}", "⚙️")
-    log_info("CONFIG", f"체크 주기: 5초 (고빈도) | HTF: 15m / LTF: 1m", "🕰️")
+    log_info("CONFIG", f"체크 주기: 5초 (고빈도) | HTF: {settings.trading.htf_timeframe} / LTF: {settings.trading.ltf_timeframe}", "🕰️")
     log_info("CONFIG", f"테스트넷: {'예' if settings.api.testnet else '아니오'}", "🎮" if settings.api.testnet else "🔴")
     print("=" * 60)
     
