@@ -41,10 +41,12 @@ class Position:
     # 트레일링 익절용 새 필드들
     original_size: float = None      # 원래 포지션 크기
     partial_closed: bool = False     # 반익절 완료 여부
+    partial_pnl: float = 0.0        # 반익절 수익 (추가!)
     trailing_price: float = None     # 트레일링 기준가 (최고점/최저점)
     trailing_stop: float = None      # 트레일링 스톱 가격
     breakeven_set: bool = False      # 본전 손절 설정 여부
     original_stop_loss: float = None # 원래 ATR 손절가 저장
+    _atr_stop_switched: bool = False # ATR 손절 전환 여부 (추가!)
 
 
 class TechnicalIndicators:
