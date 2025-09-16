@@ -1,3 +1,5 @@
+# multi_symbol_bot.py
+
 import os
 import sys
 import time
@@ -14,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from settings import settings
 from gateio_connector import GateIOConnector, get_kst_time
-from final_high_frequency_strategy import FinalHighFrequencyStrategy, Signal, Position
+from final_high_frequency_strategy import FinalHighFrequencyStrategy, Signal, Position, TechnicalIndicators
 from discord_notifier import discord_notifier
 
 # 로깅 설정 - SMC 스타일
@@ -258,6 +260,44 @@ class MultiSymbolTradingBot:
             print(f"{get_kst_time()} ❌ [ERROR] {symbol} 데이터 수집 실패: {str(e)}")
             return self.market_data.get(symbol, {})
 
+    def get_htf_trend_with_atr(self, htf_data: pd.DataFrame, symbol: str) -> str:
+        """ATR 기반 HTF 트렌드 분석"""
+        if len(htf_data) < 50:
+            return self.get_htf_trend(htf_data)  # 기존 방식 사용
+
+        try:
+            # ATR 계산
+            atr = TechnicalIndicators.atr(
+                htf_data['high'],
+                htf_data['low'],
+                htf_data['close'],
+                14
+            ).iloc[-1]
+
+            closes = htf_data['close']
+            current_price = closes.iloc[-1]
+
+            # EMA 계산
+            ema_20 = closes.ewm(span=20).mean().iloc[-1]
+            ema_50 = closes.ewm(span=50).mean().iloc[-1]
+
+            # ATR 기반 트렌드 강도 판단
+            ema_distance = abs(ema_20 - ema_50)
+            trend_strength = ema_distance / atr
+
+            # 강한 트렌드: EMA 간격이 ATR의 0.5배 이상
+            if trend_strength > 0.5:
+                if current_price > ema_20 > ema_50:
+                    return 'bullish'
+                elif current_price < ema_20 < ema_50:
+                    return 'bearish'
+
+            # 약한 트렌드거나 횡보
+            return 'neutral'
+
+        except Exception:
+            return self.get_htf_trend(htf_data)  # 오류시 기존 방식
+
     def process_symbol(self, symbol: str) -> None:
         """개별 심볼 처리"""
         try:
@@ -294,19 +334,20 @@ class MultiSymbolTradingBot:
                         # 일반 청산 (손절, 익절, 트레일링익절 등)
                         self.close_position(symbol, exit_reason, current_price)
             else:
-                # HTF 트렌드 확인 후 신호 생성
-                htf_trend = self.get_htf_trend(data['htf'])
-                if htf_trend == 'neutral':
-                    return  # 명확한 트렌드가 없으면 거래 안함
+                # HTF 트렌드 확인 (ATR 기반으로 개선) ← 변경
+                htf_trend = self.get_htf_trend_with_atr(data['htf'], symbol)  # ← 메서드 변경
                 
-                # LTF에서 진입 신호 생성 (HTF 트렌드와 일치하는 방향만)
+                # LTF에서 진입 신호 생성
                 signal = self.strategy.get_signal(data['ltf'], len(data['ltf'])-1)
+                
+                # 시장 구조에 따른 추가 필터링 ← 새로 추가
+                market_structure = signal.reason.split('[')[1].split(']')[0] if '[' in signal.reason else ""
                 
                 # 전략 분석 상태 로그 (디버깅용)
                 if signal.signal_type != 'HOLD':
                     self.signal_count += 1
-                    log_info("ANALYSIS", f"{symbol}: {signal.signal_type} 신호 (신뢰도: {signal.confidence:.2f}, 트렌드: {htf_trend})", "🔍")
-
+                    log_info("ANALYSIS", f"{symbol}: {signal.signal_type} 신호 (신뢰도: {signal.confidence:.2f}, 트렌드: {htf_trend}, 시장: {market_structure})", "🔍")
+                    
                     # Discord 거래 신호 알림
                     reason = f"HTF 트렌드: {htf_trend}, 분석: {signal.reason if hasattr(signal, 'reason') else '기술적 분석'}"
                     discord_notifier.send_trade_signal(
@@ -317,8 +358,20 @@ class MultiSymbolTradingBot:
                         confidence=signal.confidence
                     )
                 
+                # 횡보/불안정 시장에서는 HTF 트렌드 확인 생략 ← 새로 추가
+                if "횡보" in market_structure or "불안정" in market_structure:
+                    # 횡보장에서는 트렌드 필터 완화
+                    min_confidence = settings.trading.confidence_threshold * 0.8
+                else:
+                    # 추세장에서는 트렌드 일치 확인
+                    min_confidence = settings.trading.confidence_threshold
+                    
+                    if htf_trend == 'neutral' and signal.confidence < 0.7:
+                        return  # 중립 트렌드에서 약한 신호는 무시
+                
+                # 기존 조건 체크 (min_confidence 사용하도록 변경)
                 if (signal.signal_type in ['BUY', 'SELL'] and 
-                    signal.confidence >= settings.trading.confidence_threshold and
+                    signal.confidence >= min_confidence and  # ← settings.trading.confidence_threshold 대신 min_confidence
                     self.is_signal_aligned_with_trend(signal.signal_type, htf_trend, signal.confidence)):
                     
                     # 진입 조건에 대한 상세 로그 추가

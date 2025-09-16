@@ -1,3 +1,5 @@
+# final_high_frequency_strategy.py
+
 import os
 import sys
 import pandas as pd
@@ -176,25 +178,39 @@ class OptimizedPriceActionStrategy:
 
 
 class SidewaysDetector:
-    """횡보장 감지 클래스"""
-    
+    """횡보 전략 진입 감지"""
+
     def __init__(self):
         pass
     
-    def detect_oscillation_pattern(self, df: pd.DataFrame, idx: int) -> bool:
-        """방법 C: 가격 진동 패턴 감지 (백테스트에서 가장 좋은 성능)"""
-        lookback = settings.trading.sideways_lookback_period
+    def detect_sideways_entry_opportunity(self, df: pd.DataFrame, idx: int) -> bool:
+        """횡보 전략 진입 기회 감지 - 횡보 전략 전용"""
+        lookback = settings.trading.sideways_entry_lookback
         
-        if idx < lookback:
+        if idx < max(lookback, settings.trading.atr_period):
             return False
-            
-        recent_data = df.iloc[max(0, idx-lookback):idx+1]
-        highs = recent_data['high'].values
-        lows = recent_data['low'].values
         
-        # 고점/저점 카운트
+        recent_data = df.iloc[idx-lookback+1:idx+1]
+        
+        # ATR 계산
+        atr = TechnicalIndicators.atr(
+            df['high'].iloc[idx-settings.trading.atr_period:idx+1],
+            df['low'].iloc[idx-settings.trading.atr_period:idx+1],
+            df['close'].iloc[idx-settings.trading.atr_period:idx+1],
+            settings.trading.atr_period
+        ).iloc[-1]
+        
+        current_price = df['close'].iloc[idx]
+        
+        # 횡보 전략용 범위 (더 타이트)
+        max_range = atr * settings.trading.sideways_entry_atr_multiplier
+        actual_range = recent_data['high'].max() - recent_data['low'].min()
+        
+        # 진동 패턴 확인
         high_peaks = 0
         low_valleys = 0
+        highs = recent_data['high'].values
+        lows = recent_data['low'].values
         
         for i in range(1, len(highs)-1):
             if highs[i] > highs[i-1] and highs[i] > highs[i+1]:
@@ -202,16 +218,16 @@ class SidewaysDetector:
             if lows[i] < lows[i-1] and lows[i] < lows[i+1]:
                 low_valleys += 1
         
-        # 진동 패턴 조건
-        min_osc = settings.trading.sideways_min_oscillations
-        max_osc = settings.trading.sideways_max_oscillations
-        max_range_pct = settings.trading.sideways_max_range_pct
+        # 횡보 전략 진입 조건
+        is_sideways_pattern = (
+            actual_range <= max_range and  # 범위가 ATR * 1.5 이내
+            high_peaks >= settings.trading.sideways_entry_min_oscillations and
+            low_valleys >= settings.trading.sideways_entry_min_oscillations and
+            high_peaks <= settings.trading.sideways_entry_max_oscillations and
+            low_valleys <= settings.trading.sideways_entry_max_oscillations
+        )
         
-        total_range = (recent_data['high'].max() - recent_data['low'].min()) / recent_data['close'].iloc[-1]
-        
-        return (high_peaks >= min_osc and low_valleys >= min_osc and 
-                high_peaks <= max_osc and low_valleys <= max_osc and
-                total_range < max_range_pct)
+        return is_sideways_pattern
 
 
 class BollingerBandStrategy:
@@ -299,76 +315,77 @@ class FinalHighFrequencyStrategy:
         self.last_signal_time = None
         
     def get_signal(self, df: pd.DataFrame, idx: int) -> Signal:
-        """최종 신호 생성 - 모든 필터 적용"""
-        
+        """신호 생성 - 용도별 분리된 로직 사용"""
+
         # 기본 데이터 검증
         if idx < 20 or len(df) < 20:
             timestamp = df.iloc[idx]['timestamp'] if 'timestamp' in df.columns else datetime.now()
             return Signal('HOLD', timestamp, df.iloc[idx]['close'], 0.0, "데이터 부족")
-        
+
         current = df.iloc[idx]
         current_time = current['timestamp'] if 'timestamp' in df.columns else datetime.now()
-        
-        # 1. 시장 시간 필터 (24시간 거래이므로 비활성화)
-        # if not self._is_trading_hours(current_time):
-        #     return Signal('HOLD', current_time, current['close'], 0.0, "거래시간 외")
-        
-        # 2. 변동성 필터
+
+        # 변동성 필터
         volatility = self._calculate_current_volatility(df, idx)
         if volatility < self.config['min_volatility'] or volatility > self.config['max_volatility']:
             return Signal('HOLD', current_time, current['close'], 0.0, f"변동성 부적합({volatility:.3f})")
-        
-        # 3. 신호 빈도 제한 (과도한 거래 방지)
+
+        # 신호 빈도 제한
         if self.last_signal_time and (current_time - self.last_signal_time).total_seconds() < 60:
             return Signal('HOLD', current_time, current['close'], 0.0, "신호 간격 부족")
-        
-        # 4. 횡보 감지 및 전략 선택
-        is_sideways = False
+
+        # 1. 시장 구조 분석 (한 번만!)
+        market_structure = self._analyze_market_structure(df, idx)
+
+        # 2. 횡보 전략 진입 기회 확인
+        sideways_entry = False
         if settings.trading.enable_sideways_strategy:
-            is_sideways = self.sideways_detector.detect_oscillation_pattern(df, idx)
-        
-        # 5. 신호 생성 (횡보 vs 추세)
-        if is_sideways:
+            sideways_entry = self.sideways_detector.detect_sideways_entry_opportunity(df, idx)
+
+        # 3. 전략 선택
+        if sideways_entry:
+            # 횡보 전략 사용
             signal = self.sideways_strategy.get_sideways_signal(df, idx)
+            signal.reason = f"[횡보전략] " + signal.reason
         else:
+            # 추세 전략 사용 (시장 구조에 따라 신뢰도 조정)
             signal = self.price_action.enhanced_price_action_signal(df, idx)
-        
-        # 6. 추가 필터링 (횡보 전략일 때는 간소화)
+
+            if market_structure == 'choppy':
+                signal.confidence *= 0.7
+                signal.reason = f"[추세전략-불안정] " + signal.reason
+            elif market_structure == 'tight_sideways':
+                signal.confidence *= 0.8
+                signal.reason = f"[추세전략-횡보중] " + signal.reason
+            elif market_structure == 'trending':
+                signal.confidence *= 1.1
+                signal.reason = f"[추세전략-추세중] " + signal.reason
+            else:
+                signal.reason = f"[추세전략] " + signal.reason
+
+        # 4. 추가 필터링
         if signal.signal_type in ['BUY', 'SELL']:
-            if not is_sideways:
-                # 추세 전략에만 적용하는 필터
+            if not sideways_entry:
+                # 추세 전략에서만 볼륨 필터 적용
                 if self.config['use_volume_filter']:
                     volume_ok = self._check_volume_confirmation(df, idx)
                     if not volume_ok:
                         signal.confidence *= 0.7
                         signal.reason += " (거래량부족)"
-                
-                # 시장 구조 확인
-                market_structure = self._analyze_market_structure(df, idx)
-                if market_structure == 'choppy':
-                    signal.confidence *= 0.8
-                    signal.reason += " (횡보장)"
-                elif market_structure == 'trending':
-                    signal.confidence *= 1.1
-                    signal.reason += " (추세장)"
-            
+
             # 최종 신뢰도 확인
             if signal.confidence >= self.config['min_confidence']:
                 self.signals_generated += 1
                 self.last_signal_time = current_time
-                
-                # 전략 유형 표시
-                strategy_type = "횡보전략" if is_sideways else "추세전략"
-                signal.reason = f"[{strategy_type}] " + signal.reason
-                
+
                 return Signal(
                     signal.signal_type,
-                    current_time, 
-                    signal.price, 
+                    current_time,
+                    signal.price,
                     min(0.95, signal.confidence),
                     f"[HF{self.signals_generated}] {signal.reason}"
                 )
-        
+
         return Signal('HOLD', current_time, current['close'], 0.0, "조건 미달")
     
     def _is_trading_hours(self, timestamp: datetime) -> bool:
@@ -396,30 +413,47 @@ class FinalHighFrequencyStrategy:
         
         return current_volume > avg_volume * 0.8  # 평균의 80% 이상
     
-    def _analyze_market_structure(self, df: pd.DataFrame, idx: int) -> str:
-        """시장 구조 분석"""
-        if idx < 30:
+    def _analyze_market_structure(self, df: pd.DataFrame, idx: int) -> str:  # ← self 포함, 들여쓰기 수정
+        
+        """시장 구조 분석 - 추세 전략에서 사용"""
+        if idx < settings.trading.market_structure_lookback:
             return 'neutral'
         
-        # 최근 30개 캔들의 고점/저점 분석
-        recent_highs = df['high'].iloc[idx-29:idx+1]
-        recent_lows = df['low'].iloc[idx-29:idx+1]
+        lookback = settings.trading.market_structure_lookback
+        recent_data = df.iloc[idx-lookback+1:idx+1]
         
-        high_trend = np.polyfit(range(len(recent_highs)), recent_highs, 1)[0]
-        low_trend = np.polyfit(range(len(recent_lows)), recent_lows, 1)[0]
+        # ATR 계산
+        if idx >= settings.trading.atr_period:
+            atr = TechnicalIndicators.atr(
+                df['high'].iloc[idx-settings.trading.atr_period:idx+1],
+                df['low'].iloc[idx-settings.trading.atr_period:idx+1],
+                df['close'].iloc[idx-settings.trading.atr_period:idx+1],
+                settings.trading.atr_period
+            ).iloc[-1]
+        else:
+            atr = df['close'].iloc[idx] * 0.01
         
-        # 추세 강도
-        if abs(high_trend) > df['close'].iloc[idx] * 0.001 and abs(low_trend) > df['close'].iloc[idx] * 0.001:
-            if high_trend * low_trend > 0:  # 같은 방향
-                return 'trending'
+        current_price = df['close'].iloc[idx]
+        price_range = recent_data['high'].max() - recent_data['low'].min()
         
-        # 변동성 체크
-        volatility = recent_highs.std() + recent_lows.std()
-        avg_price = df['close'].iloc[idx-29:idx+1].mean()
-        if volatility / avg_price > 0.02:
+        # 추세선 분석
+        high_trend = np.polyfit(range(len(recent_data)), recent_data['high'].values, 1)[0]
+        low_trend = np.polyfit(range(len(recent_data)), recent_data['low'].values, 1)[0]
+        
+        # 시장 상태 판단
+        range_in_atr = price_range / atr
+        
+        if range_in_atr > settings.trading.market_structure_atr_multiplier:
+            # 큰 변동성 = choppy (불안정)
             return 'choppy'
-        
-        return 'neutral'
+        elif range_in_atr < settings.trading.market_sideways_atr_threshold:
+            # 작은 변동성 = 타이트한 횡보
+            return 'tight_sideways'
+        elif abs(high_trend / atr) > 0.5:
+            # 명확한 추세
+            return 'trending'
+        else:
+            return 'neutral'
 
 
 class FinalStrategyBacktester:
