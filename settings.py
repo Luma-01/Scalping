@@ -157,7 +157,7 @@ class NotificationSettings:
     color_info: int = 0x0099FF              # 파란색 (정보)
     color_warning: int = 0xFFAA00           # 주황색 (경고)
     color_error: int = 0xFF0000             # 빨간색 (오류)
-
+    color_signal: int = 0x808080            # 회색 (신호)
 
 @dataclass
 class LoggingSettings:
