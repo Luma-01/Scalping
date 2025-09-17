@@ -38,7 +38,7 @@ class DiscordNotifier:
         if not settings.notifications.notify_on_trade:
             return False
         
-        color = settings.notifications.color_profit if signal_type == "BUY" else settings.notifications.color_loss
+        color = settings.notifications.color_signal
         
         embed = {
             "title": f"🎯 거래 신호 발생",
