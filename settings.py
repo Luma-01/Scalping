@@ -69,7 +69,7 @@ class TradingSettings:
     take_profit_atr_mult: float = 4.0       # 익절 ATR 배수
     
     # =================== 신호 필터링 ===================
-    confidence_threshold: float = 0.40      # 최소 진입 신뢰도
+    confidence_threshold: float = 0.30      # 최소 진입 신뢰도
     strong_signal_threshold: float = 0.70   # 강한 신호 (역추세 진입 허용)
     neutral_signal_threshold: float = 0.50  # 중립 트렌드 진입 허용
     
