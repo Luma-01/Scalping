@@ -151,30 +151,75 @@ class OptimizedPriceActionStrategy:
         """향상된 Price Action 신호 생성"""
         current = df.iloc[idx]
         current_time = current['timestamp'] if 'timestamp' in df.columns else datetime.now()
-        
-        # 연속 패턴 감지
+    
+        # 기존 연속 패턴 감지
         has_pattern, count, direction = self.detect_consecutive_pattern(df, idx)
-        
+    
         if not has_pattern:
             return Signal('HOLD', current_time, current['close'], 0.0, "패턴 없음")
+    
+        # ===== 추가 필터링 =====
+    
+        # 1. 거래량 확인 (필수)
+        if idx >= 10:
+            current_volume = df['volume'].iloc[idx]
+            avg_volume = df['volume'].iloc[idx-9:idx].mean()
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
         
-        # 신뢰도 계산
-        confidence = min(0.9, 0.3 + (count - 3) * 0.1)  # 3개부터 시작해서 개수에 따라 증가
+            if volume_ratio < 1.2:  # 평균의 120% 미만이면 신호 무시
+                return Signal('HOLD', current_time, current['close'], 0.0, f"거래량 부족({volume_ratio:.1f}x)")
+    
+        # 2. 이전 지지/저항선 확인
+        if idx >= 20:
+            recent_highs = df['high'].iloc[idx-20:idx].max()
+            recent_lows = df['low'].iloc[idx-20:idx].min()
+            current_price = current['close']
         
+            # 저항선 근처에서 매수하거나 지지선 근처에서 매도하지 않기
+            resistance_distance = (recent_highs - current_price) / current_price
+            support_distance = (current_price - recent_lows) / current_price
+        
+            if direction == 'bullish' and resistance_distance < 0.005:  # 저항선 0.5% 이내
+                return Signal('HOLD', current_time, current_price, 0.0, "저항선 근처")
+        
+            if direction == 'bearish' and support_distance < 0.005:  # 지지선 0.5% 이내
+                return Signal('HOLD', current_time, current_price, 0.0, "지지선 근처")
+    
+        # 3. RSI 과열 확인
+        if idx >= 14:
+            rsi = TechnicalIndicators.rsi(df['close'], 14).iloc[idx]
+        
+            if direction == 'bullish' and rsi > 70:  # 과매수
+                return Signal('HOLD', current_time, current_price, 0.0, f"RSI과매수({rsi:.1f})")
+        
+            if direction == 'bearish' and rsi < 30:  # 과매도
+                return Signal('HOLD', current_time, current_price, 0.0, f"RSI과매도({rsi:.1f})")
+    
+        # 기존 신뢰도 계산
+        base_confidence = min(0.9, 0.3 + (count - 3) * 0.1)
+    
+        # 거래량에 따른 신뢰도 조정
+        if 'volume_ratio' in locals():
+            if volume_ratio > 2.0:  # 거래량 폭증
+                base_confidence *= 1.2
+            elif volume_ratio > 1.5:  # 거래량 증가
+                base_confidence *= 1.1
+    
+        final_confidence = min(0.95, base_confidence)
+    
         # 신호 결정
         if direction == 'bullish':
             action = 'BUY'
-            reason = f"{count}연속 상승 패턴"
+            reason = f"{count}연속상승+거래량{volume_ratio:.1f}x"
         elif direction == 'bearish':
             action = 'SELL' 
-            reason = f"{count}연속 하락 패턴"
+            reason = f"{count}연속하락+거래량{volume_ratio:.1f}x"
         else:
             action = 'HOLD'
             reason = "패턴 불명확"
-            confidence = 0.0
-        
-        # Signal 객체 반환 (dataclass 정의에 맞게 사용)
-        return Signal(action, current_time, current['close'], confidence, reason)
+            final_confidence = 0.0
+    
+        return Signal(action, current_time, current['close'], final_confidence, reason)
 
 
 class SidewaysDetector:
@@ -253,28 +298,47 @@ class BollingerBandStrategy:
         return upper, middle, lower
     
     def get_sideways_signal(self, df: pd.DataFrame, idx: int) -> Signal:
-        """볼린저 밴드 횡보 신호 생성"""
+        """볼린저 밴드 횡보 신호 생성 (트렌드 필터 추가)"""
         current = df.iloc[idx]
         current_price = current['close']
         current_time = current['timestamp'] if 'timestamp' in df.columns else datetime.now()
-        
+    
         upper, middle, lower = self.calculate_bands(df, idx)
-        
+    
         # 밴드 폭 확인
         band_width = (upper - lower) / middle
         if band_width < 0.01:  # 1% 미만
             return Signal('HOLD', current_time, current_price, 0.0, "밴드폭 부족")
+    
+        # ===== 트렌드 필터 추가 =====
+        if idx >= 20:
+            # 20일 EMA로 트렌드 확인
+            ema20 = df['close'].iloc[idx-19:idx+1].ewm(span=20).mean().iloc[-1]
         
-        # 횡보 신호 생성
-        if current_price >= upper * 0.995:  # 상단 밴드 근처
-            confidence = min(0.8, (current_price - upper) / (upper - middle) + 0.5)
-            return Signal('SELL', current_time, current_price, confidence, f"횡보-BB상단터치")
-        elif current_price <= lower * 1.005:  # 하단 밴드 근처  
-            confidence = min(0.8, (lower - current_price) / (middle - lower) + 0.5)
-            return Signal('BUY', current_time, current_price, confidence, f"횡보-BB하단터치")
-        else:
-            return Signal('HOLD', current_time, current_price, 0.0, "횡보-BB중간영역")
-
+            # 현재가가 EMA 위에 있으면 상승 트렌드
+            is_uptrend = current_price > ema20 * 1.005  # 0.5% 이상 위
+            is_downtrend = current_price < ema20 * 0.995  # 0.5% 이상 아래
+        
+            # 강한 트렌드에서는 역방향 신호 무시
+            if current_price >= upper * 0.995:  # 상단 밴드 근처
+                if is_uptrend:
+                    # 상승 트렌드에서 상단 터치는 추가 상승 가능성
+                    return Signal('HOLD', current_time, current_price, 0.0, "상승트렌드중-밴드상단")
+                else:
+                    # 횡보나 하락에서만 매도 신호
+                    confidence = min(0.7, (current_price - upper) / (upper - middle) + 0.4)
+                    return Signal('SELL', current_time, current_price, confidence, f"횡보-BB상단터치")
+        
+            elif current_price <= lower * 1.005:  # 하단 밴드 근처  
+                if is_downtrend:
+                    # 하락 트렌드에서 하단 터치는 추가 하락 가능성
+                    return Signal('HOLD', current_time, current_price, 0.0, "하락트렌드중-밴드하단")
+                else:
+                    # 횡보나 상승에서만 매수 신호
+                    confidence = min(0.7, (lower - current_price) / (middle - lower) + 0.4)
+                    return Signal('BUY', current_time, current_price, confidence, f"횡보-BB하단터치")
+    
+        return Signal('HOLD', current_time, current_price, 0.0, "횡보-BB중간영역")
 
 class FinalHighFrequencyStrategy:
     """최종 고빈도 스켈핑 전략 - 검증된 최적 설정"""
