@@ -7,7 +7,7 @@ import pandas as pd
 import logging
 import json
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union, Tuple, Any
 import threading
 from dataclasses import dataclass
 
@@ -203,7 +203,8 @@ class MultiSymbolTradingBot:
                         # 캐시된 데이터 사용도 성공으로 카운트
                         self.data_success_count += 1
                         return self.market_data[symbol]
-                except Exception:
+                except (KeyError, ValueError, TypeError, ConnectionError) as e:
+                    log_error(f"{symbol} 티커 조회 실패: {e}")
                     pass  # 티커 조회 실패시 새 데이터 수집
             
             # 초기 로드인 경우 1000개, 업데이트인 경우 20개만 (더 적게)
@@ -279,25 +280,26 @@ class MultiSymbolTradingBot:
             closes = htf_data['close']
             current_price = closes.iloc[-1]
 
-            # EMA 계산
-            ema_20 = closes.ewm(span=20).mean().iloc[-1]
-            ema_50 = closes.ewm(span=50).mean().iloc[-1]
+            # EMA 계산 (설정에서 가져옴)
+            ema_fast = closes.ewm(span=settings.trading.ema_fast).mean().iloc[-1]
+            ema_slow = closes.ewm(span=settings.trading.ema_slow).mean().iloc[-1]
 
             # ATR 기반 트렌드 강도 판단
-            ema_distance = abs(ema_20 - ema_50)
+            ema_distance = abs(ema_fast - ema_slow)
             trend_strength = ema_distance / atr
 
-            # 강한 트렌드: EMA 간격이 ATR의 0.5배 이상
-            if trend_strength > 0.5:
-                if current_price > ema_20 > ema_50:
+            # 강한 트렌드: EMA 간격이 ATR의 임계값 이상
+            if trend_strength > settings.trading.htf_trend_strength_threshold:
+                if current_price > ema_fast > ema_slow:
                     return 'bullish'
-                elif current_price < ema_20 < ema_50:
+                elif current_price < ema_fast < ema_slow:
                     return 'bearish'
 
             # 약한 트렌드거나 횡보
             return 'neutral'
 
-        except Exception:
+        except (KeyError, ValueError, AttributeError) as e:
+            log_error(f"{symbol} HTF ATR 분석 오류: {e}")
             return self.get_htf_trend(htf_data)  # 오류시 기존 방식
 
     def process_symbol(self, symbol: str) -> None:
@@ -305,123 +307,160 @@ class MultiSymbolTradingBot:
         try:
             # 다중 타임프레임 데이터 수집
             data = self.collect_multi_timeframe_data(symbol)
-            if not data or data['htf'].empty or data['ltf'].empty:
+            if not self._is_valid_market_data(data):
                 return
-            
+
             # 분석 카운트 증가
             self.analysis_count += 1
-            
+
             # 데이터 저장
-            if symbol not in self.market_data:
-                self.market_data[symbol] = {}
-            self.market_data[symbol] = data
-            
+            self._update_market_data(symbol, data)
+
             current_price = data['current_price']
-            
+
             # 현재 포지션 확인
             if symbol in self.positions:
-                position = self.positions[symbol]
-                # 청산 조건 체크
-                exit_reason = self.check_exit_conditions(position, current_price)
-                if exit_reason:
-                    if exit_reason == "반익절":
-                        # 반익절 실행
-                        if self.execute_partial_close(position, current_price):
-                            # 반익절 성공하면 포지션 유지하고 계속 모니터링
-                            pass
-                        else:
-                            # 반익절 실패하면 전량 청산
-                            self.close_position(symbol, "반익절실패", current_price)
-                    else:
-                        # 일반 청산 (손절, 익절, 트레일링익절 등)
-                        self.close_position(symbol, exit_reason, current_price)
+                self._handle_existing_position(symbol, current_price)
             else:
-                # HTF 트렌드 확인 (ATR 기반으로 개선) ← 변경
-                htf_trend = self.get_htf_trend_with_atr(data['htf'], symbol)  # ← 메서드 변경
-                
-                # LTF에서 진입 신호 생성
-                signal = self.strategy.get_signal(data['ltf'], len(data['ltf'])-1)
-                
-                # 시장 구조에 따른 추가 필터링 ← 새로 추가
-                market_structure = signal.reason.split('[')[1].split(']')[0] if '[' in signal.reason else ""
-                
-                # 전략 분석 상태 로그 (디버깅용)
-                if signal.signal_type != 'HOLD':
-                    self.signal_count += 1
-                    log_info("ANALYSIS", f"{symbol}: {signal.signal_type} 신호 (신뢰도: {signal.confidence:.2f}, 트렌드: {htf_trend}, 시장: {market_structure})", "🔍")
-                    
-                    # Discord 거래 신호 알림
-                    reason = f"HTF 트렌드: {htf_trend}, 분석: {signal.reason if hasattr(signal, 'reason') else '기술적 분석'}"
-                    discord_notifier.send_trade_signal(
-                        signal_type=signal.signal_type,
-                        symbol=symbol,
-                        price=current_price,
-                        reason=reason,
-                        confidence=signal.confidence
-                    )
-                
-                # 횡보/불안정 시장에서는 HTF 트렌드 확인 생략 ← 새로 추가
-                if "횡보" in market_structure or "불안정" in market_structure:
-                    # 횡보장에서는 트렌드 필터 완화
-                    min_confidence = settings.trading.confidence_threshold * 0.8
-                else:
-                    # 추세장에서는 트렌드 일치 확인
-                    min_confidence = settings.trading.confidence_threshold
-                    
-                    if htf_trend == 'neutral' and signal.confidence < 0.7:
-                        return  # 중립 트렌드에서 약한 신호는 무시
-                
-                # 기존 조건 체크 (min_confidence 사용하도록 변경)
-                if (signal.signal_type in ['BUY', 'SELL'] and 
-                    signal.confidence >= min_confidence and  # ← settings.trading.confidence_threshold 대신 min_confidence
-                    self.is_signal_aligned_with_trend(signal.signal_type, htf_trend, signal.confidence)):
-                    
-                    # 진입 조건에 대한 상세 로그 추가
-                    trend_reason = ""
-                    if signal.confidence >= 0.7:
-                        trend_reason = "강한 신호로 역추세 진입"
-                    elif signal.confidence >= 0.5 and htf_trend == 'neutral':
-                        trend_reason = "중간 신호로 중립 트렌드 진입"
-                    elif (htf_trend == 'bullish' and signal.signal_type == 'BUY') or (htf_trend == 'bearish' and signal.signal_type == 'SELL'):
-                        trend_reason = "트렌드 일치 진입"
-                    
-                    log_info("ENTRY", f"{symbol} {signal.signal_type} 진입 승인: {trend_reason} (신뢰도: {signal.confidence:.2f})", "🚀")
-                    self.open_position(symbol, signal, current_price)
-                    
+                self._handle_new_entry_opportunity(symbol, data, current_price)
+
         except Exception as e:
             log_error(f"{symbol} 처리 오류: {e}")
+
+    def _is_valid_market_data(self, data: Dict) -> bool:
+        """시장 데이터 유효성 검증"""
+        return bool(data and not data.get('htf', pd.DataFrame()).empty and not data.get('ltf', pd.DataFrame()).empty)
+
+    def _update_market_data(self, symbol: str, data: Dict) -> None:
+        """시장 데이터 업데이트"""
+        if symbol not in self.market_data:
+            self.market_data[symbol] = {}
+        self.market_data[symbol] = data
+
+    def _handle_existing_position(self, symbol: str, current_price: float) -> None:
+        """기존 포지션 처리"""
+        position = self.positions[symbol]
+        exit_reason = self.check_exit_conditions(position, current_price)
+
+        if not exit_reason:
+            return
+
+        if exit_reason == "반익절":
+            if self.execute_partial_close(position, current_price):
+                pass  # 반익절 성공하면 포지션 유지하고 계속 모니터링
+            else:
+                self.close_position(symbol, "반익절실패", current_price)  # 반익절 실패하면 전량 청산
+        else:
+            self.close_position(symbol, exit_reason, current_price)  # 일반 청산
+
+    def _handle_new_entry_opportunity(self, symbol: str, data: Dict, current_price: float) -> None:
+        """새로운 진입 기회 처리"""
+        # HTF 트렌드 확인
+        htf_trend = self.get_htf_trend_with_atr(data['htf'], symbol)
+
+        # LTF에서 진입 신호 생성
+        signal = self.strategy.get_signal(data['ltf'], len(data['ltf'])-1)
+
+        # 시장 구조 분석
+        market_structure = self._extract_market_structure(signal)
+
+        # 신호 처리 및 알림
+        if signal.signal_type != 'HOLD':
+            self._handle_trading_signal(symbol, signal, htf_trend, market_structure, current_price)
+
+        # 진입 조건 확인 및 실행
+        if self._should_enter_position(signal, htf_trend, market_structure):
+            self._log_entry_decision(symbol, signal, htf_trend)
+            self.open_position(symbol, signal, current_price)
+
+    def _extract_market_structure(self, signal: Signal) -> str:
+        """신호에서 시장 구조 추출"""
+        try:
+            return signal.reason.split('[')[1].split(']')[0] if '[' in signal.reason else ""
+        except (IndexError, AttributeError):
+            return ""
+
+    def _handle_trading_signal(self, symbol: str, signal: Signal, htf_trend: str, market_structure: str, current_price: float) -> None:
+        """거래 신호 처리 및 알림"""
+        self.signal_count += 1
+        log_info("ANALYSIS", f"{symbol}: {signal.signal_type} 신호 (신뢰도: {signal.confidence:.2f}, 트렌드: {htf_trend}, 시장: {market_structure})", "🔍")
+
+        # Discord 거래 신호 알림
+        reason = f"HTF 트렌드: {htf_trend}, 분석: {getattr(signal, 'reason', '기술적 분석')}"
+        discord_notifier.send_trade_signal(
+            signal_type=signal.signal_type,
+            symbol=symbol,
+            price=current_price,
+            reason=reason,
+            confidence=signal.confidence
+        )
+
+    def _should_enter_position(self, signal: Signal, htf_trend: str, market_structure: str) -> bool:
+        """포지션 진입 여부 결정"""
+        if signal.signal_type not in ['BUY', 'SELL']:
+            return False
+
+        # 시장 구조에 따른 신뢰도 임계값 조정
+        min_confidence = self._get_confidence_threshold(market_structure)
+
+        # 중립 트렌드에서 약한 신호는 무시
+        if htf_trend == 'neutral' and signal.confidence < settings.trading.strong_signal_threshold and "횡보" not in market_structure:
+            return False
+
+        return (signal.confidence >= min_confidence and
+                self.is_signal_aligned_with_trend(signal.signal_type, htf_trend, signal.confidence))
+
+    def _get_confidence_threshold(self, market_structure: str) -> float:
+        """시장 구조에 따른 신뢰도 임계값 반환"""
+        if "횡보" in market_structure or "불안정" in market_structure:
+            return settings.trading.confidence_threshold * settings.trading.sideways_confidence_reduction  # 횡보장에서는 완화
+        return settings.trading.confidence_threshold
+
+    def _log_entry_decision(self, symbol: str, signal: Signal, htf_trend: str) -> None:
+        """진입 결정 로깅"""
+        if signal.confidence >= settings.trading.strong_signal_threshold:
+            trend_reason = "강한 신호로 역추세 진입"
+        elif signal.confidence >= settings.trading.neutral_signal_threshold and htf_trend == 'neutral':
+            trend_reason = "중간 신호로 중립 트렌드 진입"
+        elif (htf_trend == 'bullish' and signal.signal_type == 'BUY') or (htf_trend == 'bearish' and signal.signal_type == 'SELL'):
+            trend_reason = "트렌드 일치 진입"
+        else:
+            trend_reason = "조건부 진입"
+
+        log_info("ENTRY", f"{symbol} {signal.signal_type} 진입 승인: {trend_reason} (신뢰도: {signal.confidence:.2f})", "🚀")
     
     def get_htf_trend(self, htf_data: pd.DataFrame) -> str:
         """HTF 트렌드 분석 (15분봉)"""
         if len(htf_data) < 20:
             return 'neutral'
         
-        # 간단한 EMA 기반 트렌드 확인
+        # EMA 기반 트렌드 확인 (설정값 사용)
         try:
             closes = htf_data['close']
-            ema_20 = closes.ewm(span=20).mean().iloc[-1]
-            ema_50 = closes.ewm(span=50).mean().iloc[-1]
+            ema_fast = closes.ewm(span=settings.trading.ema_fast).mean().iloc[-1]
+            ema_slow = closes.ewm(span=settings.trading.ema_slow).mean().iloc[-1]
             current_price = closes.iloc[-1]
-            
+
             # 트렌드 강도 확인
-            if current_price > ema_20 > ema_50:
+            if current_price > ema_fast > ema_slow:
                 return 'bullish'
-            elif current_price < ema_20 < ema_50:
+            elif current_price < ema_fast < ema_slow:
                 return 'bearish'
             else:
                 return 'neutral'
                 
-        except Exception:
+        except (KeyError, ValueError, AttributeError) as e:
+            log_error(f"HTF 트렌드 분석 오류: {e}")
             return 'neutral'
     
     def is_signal_aligned_with_trend(self, signal_type: str, htf_trend: str, confidence: float = 0.0) -> bool:
         """신호가 HTF 트렌드와 일치하는지 확인 (강한 신호는 역추세도 허용)"""
-        # 1. 강한 신호(0.7+ 신뢰도)는 트렌드 무관하게 진입 허용
-        if confidence >= 0.7:
+        # 1. 강한 신호(설정값 신뢰도)는 트렌드 무관하게 진입 허용
+        if confidence >= settings.trading.strong_signal_threshold:
             return True
             
-        # 2. 중간 강도 신호(0.5+ 신뢰도)는 neutral 트렌드에서도 허용
-        if confidence >= 0.5 and htf_trend == 'neutral':
+        # 2. 중간 강도 신호(설정값 신뢰도)는 neutral 트렌드에서도 허용
+        if confidence >= settings.trading.neutral_signal_threshold and htf_trend == 'neutral':
             return True
             
         # 3. 일반적인 트렌드 일치 확인
@@ -568,6 +607,30 @@ class MultiSymbolTradingBot:
         contract_size = self.get_contract_size(symbol)
         return sdk_size * contract_size
 
+    def _calculate_atr(self, symbol: str, period: int = None) -> Optional[float]:
+        """공통 ATR 계산 메서드"""
+        try:
+            market_data = self.market_data.get(symbol)
+            if not market_data or 'ltf' not in market_data or market_data['ltf'].empty:
+                return None
+
+            df = market_data['ltf']
+            atr_period = period or settings.trading.atr_period
+
+            if len(df) < atr_period:
+                return None
+
+            from final_high_frequency_strategy import TechnicalIndicators
+            atr = TechnicalIndicators.atr(
+                df['high'], df['low'], df['close'],
+                atr_period
+            ).iloc[-1]
+
+            return atr
+        except (KeyError, IndexError, AttributeError) as e:
+            log_error(f"{symbol} ATR 계산 오류: {e}")
+            return None
+
     def open_position(self, symbol: str, signal: Signal, price: float):
         """포지션 진입"""
         try:
@@ -650,13 +713,13 @@ class MultiSymbolTradingBot:
                         log_info("ATR", f"{symbol} ATR: {atr:.6f}, 손절: {stop_loss:.6f}, 익절: {take_profit:.6f}", "📊")
                     else:
                         # 데이터 부족시 기본값 사용
-                        stop_loss = price * (0.997 if side == 'long' else 1.003)
-                        take_profit = price * (1.003 if side == 'long' else 0.997)
+                        stop_loss = price * (1 - settings.trading.default_stop_loss_pct if side == 'long' else 1 + settings.trading.default_stop_loss_pct)
+                        take_profit = price * (1 + settings.trading.default_take_profit_pct if side == 'long' else 1 - settings.trading.default_take_profit_pct)
                         log_info("ATR", f"{symbol} ATR 데이터 부족 - 고정 0.3% 사용", "⚠️")
                 else:
                     # 시장 데이터 없을 시 기본값
-                    stop_loss = price * (0.997 if side == 'long' else 1.003)
-                    take_profit = price * (1.003 if side == 'long' else 0.997)
+                    stop_loss = price * (1 - settings.trading.default_stop_loss_pct if side == 'long' else 1 + settings.trading.default_stop_loss_pct)
+                    take_profit = price * (1 + settings.trading.default_take_profit_pct if side == 'long' else 1 - settings.trading.default_take_profit_pct)
                     log_info("ATR", f"{symbol} 시장 데이터 없음 - 고정 0.3% 사용", "⚠️")
 
                 # 포지션 기록 (트레일링 익절 필드 초기화)
@@ -864,20 +927,20 @@ class MultiSymbolTradingBot:
                         return current_price - (atr * settings.trading.stop_loss_atr_mult)
                     else:
                         return current_price + (atr * settings.trading.stop_loss_atr_mult)
-        except Exception:
-            pass
+        except (ValueError, ArithmeticError) as e:
+            log_error(f"{position.symbol} ATR 손절 계산 오류: {e}")
         
         # ATR 계산 실패시 기본값
         if position.side == 'long':
-            return current_price * 0.997
+            return current_price * (1 - settings.trading.default_stop_loss_pct)
         else:
-            return current_price * 1.003
+            return current_price * (1 + settings.trading.default_stop_loss_pct)
     
     def execute_partial_close(self, position: Position, current_price: float):
         """반익절 실행 + 본전 손절 설정"""
         try:
-            # 50% 청산 주문
-            close_size = position.original_size // 2
+            # 설정된 비율로 청산 주문
+            close_size = int(position.original_size * settings.trading.partial_close_ratio)
             if close_size <= 0:
                 close_size = 1  # 최소 1계약은 청산
             
@@ -934,7 +997,7 @@ class MultiSymbolTradingBot:
                     # ATR 기반 트레일링 스톱 설정
                     atr = self.get_current_atr(position.symbol)
                     if atr:
-                        position.trailing_stop = current_price - (atr * 2.0)  # ATR의 2배
+                        position.trailing_stop = current_price - (atr * settings.trading.trailing_stop_atr_multiplier)
                         log_info("TRAIL", f"{position.symbol} 트레일링 업데이트: 기준가 {current_price:.6f}, 스톱 {position.trailing_stop:.6f}", "🎯")
                 
                 # 트레일링 스톱 도달
@@ -946,7 +1009,7 @@ class MultiSymbolTradingBot:
                     position.trailing_price = current_price
                     atr = self.get_current_atr(position.symbol)
                     if atr:
-                        position.trailing_stop = current_price + (atr * 2.0)
+                        position.trailing_stop = current_price + (atr * settings.trading.trailing_stop_atr_multiplier)
                         log_info("TRAIL", f"{position.symbol} 트레일링 업데이트: 기준가 {current_price:.6f}, 스톱 {position.trailing_stop:.6f}", "🎯")
                 
                 if position.trailing_stop and current_price >= position.trailing_stop:
@@ -974,8 +1037,8 @@ class MultiSymbolTradingBot:
                         settings.trading.atr_period
                     ).iloc[-1]
                     return atr
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError) as e:
+            log_error(f"{symbol} 현재 ATR 계산 오류: {e}")
         return None
     
     def detect_reversal_signal(self, symbol: str) -> bool:
@@ -1007,9 +1070,9 @@ class MultiSymbolTradingBot:
             # 과매도에서 RSI 상승 + 가격 상승 = 매수 신호
             if current_rsi < 30 and current_rsi > prev_rsi and current_price > prev_price:
                 return True
-            
-        except Exception:
-            pass
+
+        except (KeyError, ValueError, AttributeError) as e:
+            log_error(f"{symbol} 반전 신호 감지 오류: {e}")
         
         return False
     

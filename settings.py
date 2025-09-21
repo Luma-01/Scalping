@@ -51,8 +51,8 @@ class TradingSettings:
     
     # =================== 기술적 지표 ===================
     # EMA 설정
-    ema_fast: int = 9                       # 빠른 EMA
-    ema_slow: int = 21                      # 느린 EMA
+    ema_fast: int = 7                       # 빠른 EMA
+    ema_slow: int = 20                      # 느린 EMA
     
     # RSI 설정  
     rsi_period: int = 14                    # RSI 계산 기간
@@ -60,7 +60,7 @@ class TradingSettings:
     rsi_overbought: int = 70                # 과매수 구간
     
     # Bollinger Bands 설정
-    bb_period: int = 20                     # BB 계산 기간
+    bb_period: int = 50                     # BB 계산 기간
     bb_std: float = 2.0                     # 표준편차 배수
     
     # ATR 설정
@@ -72,6 +72,16 @@ class TradingSettings:
     confidence_threshold: float = 0.30      # 최소 진입 신뢰도
     strong_signal_threshold: float = 0.70   # 강한 신호 (역추세 진입 허용)
     neutral_signal_threshold: float = 0.50  # 중립 트렌드 진입 허용
+    sideways_confidence_reduction: float = 0.8  # 횡보장 신뢰도 완화 비율
+
+    # =================== 기본 손익 레벨 ===================
+    default_stop_loss_pct: float = 0.003     # 0.3% 기본 손절
+    default_take_profit_pct: float = 0.003   # 0.3% 기본 익절
+
+    # =================== 포지션 관리 ===================
+    partial_close_ratio: float = 0.5         # 반익절 비율 (50%)
+    trailing_stop_atr_multiplier: float = 2.0  # 트레일링 스톱 ATR 배수
+    htf_trend_strength_threshold: float = 0.5  # HTF 트렌드 강도 임계값
     
     # =================== 시장 구조 분석용 (추세 전략에서 사용) ===================
     market_structure_atr_multiplier: float = 2.0   # ATR의 2배 이상 움직임 = choppy
@@ -86,7 +96,7 @@ class TradingSettings:
     sideways_entry_max_oscillations: int = 5        # 최대 진동 횟수
     
     # 볼린저 밴드 (횡보 전략 진입 신호)
-    bollinger_period: int = 20
+    bollinger_period: int = 50
     bollinger_std_dev: float = 2.0
     
     # =================== 리스크 관리 ===================

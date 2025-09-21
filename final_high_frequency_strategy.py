@@ -311,13 +311,14 @@ class BollingerBandStrategy:
             return Signal('HOLD', current_time, current_price, 0.0, "밴드폭 부족")
     
         # ===== 트렌드 필터 추가 =====
-        if idx >= 20:
-            # 20일 EMA로 트렌드 확인
-            ema20 = df['close'].iloc[idx-19:idx+1].ewm(span=20).mean().iloc[-1]
-        
+        ema_slow_period = settings.trading.ema_slow
+        if idx >= ema_slow_period:
+            # EMA 설정값으로 트렌드 확인
+            ema_slow = df['close'].iloc[idx-ema_slow_period+1:idx+1].ewm(span=ema_slow_period).mean().iloc[-1]
+
             # 현재가가 EMA 위에 있으면 상승 트렌드
-            is_uptrend = current_price > ema20 * 1.005  # 0.5% 이상 위
-            is_downtrend = current_price < ema20 * 0.995  # 0.5% 이상 아래
+            is_uptrend = current_price > ema_slow * 1.005  # 0.5% 이상 위
+            is_downtrend = current_price < ema_slow * 0.995  # 0.5% 이상 아래
         
             # 강한 트렌드에서는 역방향 신호 무시
             if current_price >= upper * 0.995:  # 상단 밴드 근처
